@@ -58,19 +58,80 @@ jobs:
           echo "scheme_name=$SCHEME_NAME" >> $GITHUB_OUTPUT
           echo "binary_name=$SCHEME_NAME" >> $GITHUB_OUTPUT
 
+      - name: Verify iOS project structure
+        id: verify-project
+        working-directory: ios
+        run: |
+          echo "Listing iOS directory contents:"
+          ls -la
+          echo ""
+          
+          SCHEME_NAME="${{ steps.app-info.outputs.scheme_name }}"
+          EXPECTED_WORKSPACE="${SCHEME_NAME}.xcworkspace"
+          EXPECTED_PROJECT="${SCHEME_NAME}.xcodeproj"
+          
+          # First check for expected workspace
+          if [ -d "$EXPECTED_WORKSPACE" ]; then
+            echo "Found expected workspace: $EXPECTED_WORKSPACE"
+            echo "build_target=$EXPECTED_WORKSPACE" >> $GITHUB_OUTPUT
+            echo "build_type=workspace" >> $GITHUB_OUTPUT
+          # Then check for any workspace
+          elif WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" -type d | head -n 1); then
+            echo "Found workspace: $WORKSPACE"
+            echo "build_target=$WORKSPACE" >> $GITHUB_OUTPUT
+            echo "build_type=workspace" >> $GITHUB_OUTPUT
+          # Then check for expected project
+          elif [ -d "$EXPECTED_PROJECT" ]; then
+            echo "Found expected project: $EXPECTED_PROJECT"
+            echo "build_target=$EXPECTED_PROJECT" >> $GITHUB_OUTPUT
+            echo "build_type=project" >> $GITHUB_OUTPUT
+          # Finally check for any project
+          elif PROJECT=$(find . -maxdepth 1 -name "*.xcodeproj" -type d | head -n 1); then
+            echo "Found project: $PROJECT"
+            echo "build_target=$PROJECT" >> $GITHUB_OUTPUT
+            echo "build_type=project" >> $GITHUB_OUTPUT
+          else
+            echo "Error: Neither workspace nor project found!"
+            echo "Searched for:"
+            echo "  - $EXPECTED_WORKSPACE"
+            echo "  - $EXPECTED_PROJECT"
+            echo "  - Any *.xcworkspace"
+            echo "  - Any *.xcodeproj"
+            echo ""
+            echo "Available files:"
+            ls -la
+            exit 1
+          fi
+          
+          echo "Using build target: ${{ steps.verify-project.outputs.build_target }}"
+          echo "Build type: ${{ steps.verify-project.outputs.build_type }}"
+
       - name: Build iOS app (unsigned)
         working-directory: ios
         run: |
-          xcodebuild -workspace "${{ steps.app-info.outputs.scheme_name }}.xcworkspace" \
-            -scheme "${{ steps.app-info.outputs.scheme_name }}" \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath ./build/DerivedData \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_ENTITLEMENTS="" \
-            CODE_SIGNING_ALLOWED=NO \
-            clean build
+          if [ "${{ steps.verify-project.outputs.build_type }}" = "workspace" ]; then
+            xcodebuild -workspace "${{ steps.verify-project.outputs.build_target }}" \
+              -scheme "${{ steps.app-info.outputs.scheme_name }}" \
+              -configuration Release \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath ./build/DerivedData \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_ENTITLEMENTS="" \
+              CODE_SIGNING_ALLOWED=NO \
+              clean build
+          else
+            xcodebuild -project "${{ steps.verify-project.outputs.build_target }}" \
+              -scheme "${{ steps.app-info.outputs.scheme_name }}" \
+              -configuration Release \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath ./build/DerivedData \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_ENTITLEMENTS="" \
+              CODE_SIGNING_ALLOWED=NO \
+              clean build
+          fi
 
       - name: Prepare app bundle
         run: |
