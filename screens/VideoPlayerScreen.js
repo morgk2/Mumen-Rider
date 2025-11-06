@@ -32,12 +32,12 @@ const SUBTITLE_SETTINGS_KEY = '@subtitle_settings';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function VideoPlayerScreen({ route, navigation }) {
-  const { item, episode, season, episodeNumber, resumePosition } = route.params || {};
+  const { item, episode, season, episodeNumber, resumePosition, directStreamUrl, title } = route.params || {};
   const insets = useSafeAreaInsets();
   const videoRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [streamUrl, setStreamUrl] = useState(null);
+  const [streamUrl, setStreamUrl] = useState(directStreamUrl || null);
   const [isPlaying, setIsPlaying] = useState(true);
   const [position, setPosition] = useState(resumePosition || 0);
   const [duration, setDuration] = useState(0);
@@ -511,6 +511,13 @@ export default function VideoPlayerScreen({ route, navigation }) {
     try {
       setLoading(true);
       setError(null);
+
+      // If directStreamUrl is provided, use it directly
+      if (directStreamUrl) {
+        setStreamUrl(directStreamUrl);
+        setLoading(false);
+        return;
+      }
 
       if (!item || !item.id) {
         setError('Invalid item');

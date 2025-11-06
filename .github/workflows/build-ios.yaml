@@ -187,7 +187,8 @@ jobs:
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGN_ENTITLEMENTS="" \
               CODE_SIGNING_ALLOWED=NO \
-              clean build
+              clean build \
+              | tee xcodebuild.log
           else
             xcodebuild -project "${{ steps.verify-project.outputs.build_target }}" \
               -scheme "${{ steps.detect-scheme.outputs.scheme_name }}" \
@@ -198,15 +199,34 @@ jobs:
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGN_ENTITLEMENTS="" \
               CODE_SIGNING_ALLOWED=NO \
-              clean build
+              clean build \
+              | tee xcodebuild.log
           fi
+          
+          # Check if build succeeded
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "Build failed!"
+            tail -n 50 xcodebuild.log
+            exit 1
+          fi
+          
+          echo "Build completed successfully"
+          
+          # List build output structure
+          echo "Build output structure:"
+          find ./build/DerivedData -type d -maxdepth 4 | head -n 30 || true
 
       - name: Prepare app bundle
         run: |
           mkdir -p build
-          BUILD_DIR="ios/build/DerivedData/Build/Products/Release-iphoneos"
+          DERIVED_DATA="ios/build/DerivedData"
+          BUILD_DIR="${DERIVED_DATA}/Build/Products/Release-iphoneos"
           
-          # Try to find the app bundle using the detected scheme name
+          echo "Searching for app bundle..."
+          echo "Expected scheme name: ${{ steps.detect-scheme.outputs.scheme_name }}"
+          echo "Expected app slug: ${{ steps.app-info.outputs.scheme_name }}"
+          
+          # First, try the expected locations
           APP_BUNDLE_NAME="${{ steps.detect-scheme.outputs.scheme_name }}"
           APP_PATH="${BUILD_DIR}/${APP_BUNDLE_NAME}.app"
           
@@ -216,30 +236,58 @@ jobs:
             APP_PATH="${BUILD_DIR}/${APP_BUNDLE_NAME}.app"
           fi
           
-          # If still not found, find any .app in the build directory
+          # If still not found, search recursively in DerivedData for any .app
           if [ ! -d "$APP_PATH" ]; then
-            echo "App bundle not found with expected names, searching..."
-            APP_BUNDLE=$(find "$BUILD_DIR" -maxdepth 1 -name "*.app" -type d | head -n 1)
+            echo "App bundle not found in expected location, searching recursively..."
+            echo "Searching in: $DERIVED_DATA"
+            APP_BUNDLE=$(find "$DERIVED_DATA" -name "*.app" -type d | grep -v ".framework" | grep -v "Pods" | head -n 1)
             if [ -n "$APP_BUNDLE" ]; then
               APP_BUNDLE_NAME=$(basename "$APP_BUNDLE" .app)
               APP_PATH="$APP_BUNDLE"
-              echo "Found app bundle: $APP_BUNDLE_NAME"
+              echo "Found app bundle: $APP_BUNDLE_NAME at $APP_PATH"
             fi
+          fi
+          
+          # If still not found, try alternative build paths
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Trying alternative build paths..."
+            ALTERNATIVE_PATHS=(
+              "${DERIVED_DATA}/Build/Products/Debug-iphoneos"
+              "${DERIVED_DATA}/Build/Products"
+              "ios/build"
+            )
+            
+            for ALT_PATH in "${ALTERNATIVE_PATHS[@]}"; do
+              if [ -d "$ALT_PATH" ]; then
+                ALT_BUNDLE=$(find "$ALT_PATH" -maxdepth 2 -name "*.app" -type d | grep -v ".framework" | head -n 1)
+                if [ -n "$ALT_BUNDLE" ]; then
+                  APP_BUNDLE_NAME=$(basename "$ALT_BUNDLE" .app)
+                  APP_PATH="$ALT_BUNDLE"
+                  echo "Found app bundle in alternative location: $APP_PATH"
+                  break
+                fi
+              fi
+            done
           fi
           
           if [ ! -d "$APP_PATH" ]; then
             echo "Error: App bundle not found!"
-            echo "Searched for:"
+            echo "Searched in:"
             echo "  - ${BUILD_DIR}/${{ steps.detect-scheme.outputs.scheme_name }}.app"
             echo "  - ${BUILD_DIR}/${{ steps.app-info.outputs.scheme_name }}.app"
+            echo "  - Recursively in $DERIVED_DATA"
             echo ""
-            echo "Listing build directory:"
-            ls -la "$BUILD_DIR" || true
+            echo "Listing DerivedData structure:"
+            find "$DERIVED_DATA" -maxdepth 3 -type d | head -n 20 || true
+            echo ""
+            echo "All .app files found:"
+            find "$DERIVED_DATA" -name "*.app" -type d 2>/dev/null || true
             exit 1
           fi
           
           TARGET_APP="build/${APP_BUNDLE_NAME}.app"
           echo "Using app bundle: $APP_BUNDLE_NAME"
+          echo "Source path: $APP_PATH"
           
           cp -r "$APP_PATH" "$TARGET_APP"
           
