@@ -1,6 +1,8 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { VixsrcService } from './VixsrcService';
+import { N3tflixService } from './N3tflixService';
+import { StorageService } from './StorageService';
 import { OpenSubtitlesService } from './OpenSubtitlesService';
 
 const DOWNLOADS_KEY = '@video_downloads';
@@ -172,7 +174,11 @@ export const VideoDownloadService = {
       downloadInfo.progress = 0.1;
       if (onProgress) onProgress(0.1);
       
-      const result = await VixsrcService.fetchMovieWithSubtitles(mediaId);
+      // Get the selected video source
+      const source = await StorageService.getVideoSource();
+      const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+      
+      const result = await service.fetchMovieWithSubtitles(mediaId);
       
       if (!result || !result.streamUrl) {
         throw new Error('Could not fetch video stream');
@@ -316,7 +322,11 @@ export const VideoDownloadService = {
       downloadInfo.progress = 0.1;
       if (onProgress) onProgress(0.1);
       
-      const result = await VixsrcService.fetchEpisodeWithSubtitles(mediaId, season, episodeNumber);
+      // Get the selected video source
+      const source = await StorageService.getVideoSource();
+      const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+      
+      const result = await service.fetchEpisodeWithSubtitles(mediaId, season, episodeNumber);
       
       if (!result || !result.streamUrl) {
         throw new Error('Could not fetch video stream');

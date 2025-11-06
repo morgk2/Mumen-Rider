@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const BOOKMARKS_KEY = '@bookmarks';
 const COLLECTIONS_KEY = '@collections';
 const READING_MODE_KEY = '@reading_mode';
+const VIDEO_SOURCE_KEY = '@video_source';
 
 export class StorageService {
   // Bookmarks/Saves
@@ -232,6 +233,27 @@ export class StorageService {
       return true;
     } catch (error) {
       console.error('Error setting reading mode:', error);
+      return false;
+    }
+  }
+
+  // Video Source Preferences
+  static async getVideoSource() {
+    try {
+      const source = await AsyncStorage.getItem(VIDEO_SOURCE_KEY);
+      return source || 'vixsrc'; // Default to vixsrc
+    } catch (error) {
+      console.error('Error getting video source:', error);
+      return 'vixsrc';
+    }
+  }
+
+  static async setVideoSource(source) {
+    try {
+      await AsyncStorage.setItem(VIDEO_SOURCE_KEY, source);
+      return true;
+    } catch (error) {
+      console.error('Error setting video source:', error);
       return false;
     }
   }

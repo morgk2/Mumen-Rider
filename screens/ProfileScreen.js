@@ -182,26 +182,6 @@ export default function ProfileScreen({ navigation }) {
       >
         <Text style={styles.pageTitle}>Account</Text>
 
-        {/* Torrent Streaming Section */}
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.torrentButton}
-            onPress={() => navigation.navigate('TorrentStream')}
-            activeOpacity={0.8}
-          >
-            <View style={styles.torrentButtonContent}>
-              <Ionicons name="cloud-download" size={24} color="#fff" />
-              <View style={styles.torrentButtonTextContainer}>
-                <Text style={styles.torrentButtonTitle}>Torrent Streaming</Text>
-                <Text style={styles.torrentButtonSubtitle}>
-                  Stream videos from magnet links or torrent files
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color="#888" />
-            </View>
-          </TouchableOpacity>
-        </View>
-
         {/* Bookmarks/Saves Section */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -489,32 +469,6 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingTop: 40,
     justifyContent: 'flex-start',
-  },
-  torrentButton: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    padding: 16,
-    marginHorizontal: 20,
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
-  },
-  torrentButtonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  torrentButtonTextContainer: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  torrentButtonTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 4,
-  },
-  torrentButtonSubtitle: {
-    fontSize: 14,
-    color: '#888',
   },
 });
 

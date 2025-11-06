@@ -23,8 +23,10 @@ import { BlurView } from 'expo-blur';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VixsrcService } from '../services/VixsrcService';
+import { N3tflixService } from '../services/N3tflixService';
 import { OpenSubtitlesService, LANGUAGE_CODES } from '../services/OpenSubtitlesService';
 import { WatchProgressService } from '../services/WatchProgressService';
+import { StorageService } from '../services/StorageService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const SUBTITLE_SETTINGS_KEY = '@subtitle_settings';
@@ -32,12 +34,12 @@ const SUBTITLE_SETTINGS_KEY = '@subtitle_settings';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function VideoPlayerScreen({ route, navigation }) {
-  const { item, episode, season, episodeNumber, resumePosition, directStreamUrl, title } = route.params || {};
+  const { item, episode, season, episodeNumber, resumePosition } = route.params || {};
   const insets = useSafeAreaInsets();
   const videoRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [streamUrl, setStreamUrl] = useState(directStreamUrl || null);
+  const [streamUrl, setStreamUrl] = useState(null);
   const [isPlaying, setIsPlaying] = useState(true);
   const [position, setPosition] = useState(resumePosition || 0);
   const [duration, setDuration] = useState(0);
@@ -72,11 +74,24 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [subtitleShadow, setSubtitleShadow] = useState(false);
   const [subtitleBackground, setSubtitleBackground] = useState(true);
   const [subtitleOutline, setSubtitleOutline] = useState(false);
+  
+  // Video source state
+  const [videoSource, setVideoSource] = useState('vixsrc');
 
-  // Load subtitle settings on mount
+  // Load subtitle settings and video source on mount
   useEffect(() => {
     loadSubtitleSettings();
+    loadVideoSource();
   }, []);
+
+  const loadVideoSource = async () => {
+    try {
+      const source = await StorageService.getVideoSource();
+      setVideoSource(source);
+    } catch (error) {
+      console.error('Error loading video source:', error);
+    }
+  };
 
   const loadSubtitleSettings = async () => {
     try {
@@ -512,26 +527,26 @@ export default function VideoPlayerScreen({ route, navigation }) {
       setLoading(true);
       setError(null);
 
-      // If directStreamUrl is provided, use it directly
-      if (directStreamUrl) {
-        setStreamUrl(directStreamUrl);
-        setLoading(false);
-        return;
-      }
-
       if (!item || !item.id) {
         setError('Invalid item');
         setLoading(false);
         return;
       }
 
+      // Get the selected video source
+      const source = await StorageService.getVideoSource();
+      setVideoSource(source);
+
+      // Select the appropriate service
+      const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+
       const tmdbId = item.id;
       let result = null;
 
       if (episode && season && episodeNumber) {
-        result = await VixsrcService.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber);
+        result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber);
       } else {
-        result = await VixsrcService.fetchMovieWithSubtitles(tmdbId);
+        result = await service.fetchMovieWithSubtitles(tmdbId);
       }
 
       if (result && result.streamUrl) {

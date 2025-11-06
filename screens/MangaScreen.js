@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, Animated } from 'react-native';
 import { MangaSection } from '../components/MangaSection';
 import { FeaturedManga } from '../components/FeaturedManga';
+import { FeaturedMangaSkeleton } from '../components/FeaturedMangaSkeleton';
+import { MangaSectionSkeleton } from '../components/MangaSectionSkeleton';
 import { AniListService } from '../services/AniListService';
 
 export default function MangaScreen({ navigation }) {
@@ -11,6 +13,7 @@ export default function MangaScreen({ navigation }) {
   const [popularManga, setPopularManga] = useState([]);
   const [newReleases, setNewReleases] = useState([]);
   const [topRated, setTopRated] = useState([]);
+  const [loadingFeatured, setLoadingFeatured] = useState(true);
   const [loadingTrending, setLoadingTrending] = useState(true);
   const [loadingPopular, setLoadingPopular] = useState(true);
   const [loadingNewReleases, setLoadingNewReleases] = useState(true);
@@ -21,6 +24,7 @@ export default function MangaScreen({ navigation }) {
   }, []);
 
   const fetchMangaContent = async () => {
+    setLoadingFeatured(true);
     // Fetch trending manga
     setLoadingTrending(true);
     const trending = await AniListService.fetchTrendingManga(1, 20);
@@ -31,6 +35,7 @@ export default function MangaScreen({ navigation }) {
     if (trending.length > 0 && (trending[0].bannerImage || trending[0].coverImage)) {
       setFeaturedManga(trending[0]);
     }
+    setLoadingFeatured(false);
 
     // Fetch popular manga
     setLoadingPopular(true);
@@ -71,35 +76,55 @@ export default function MangaScreen({ navigation }) {
         scrollEventThrottle={16}
       >
         {/* Featured Manga */}
-        <FeaturedManga item={featuredManga} navigation={navigation} scrollY={scrollY} />
+        {loadingFeatured ? (
+          <FeaturedMangaSkeleton />
+        ) : (
+          <FeaturedManga item={featuredManga} navigation={navigation} scrollY={scrollY} />
+        )}
 
-        <MangaSection
-          title="Trending Manga"
-          data={trendingManga}
-          loading={loadingTrending}
-          onPress={handleMangaPress}
-        />
+        {loadingTrending ? (
+          <MangaSectionSkeleton title="Trending Manga" />
+        ) : (
+          <MangaSection
+            title="Trending Manga"
+            data={trendingManga}
+            loading={loadingTrending}
+            onPress={handleMangaPress}
+          />
+        )}
         
-        <MangaSection
-          title="Popular Manga"
-          data={popularManga}
-          loading={loadingPopular}
-          onPress={handleMangaPress}
-        />
+        {loadingPopular ? (
+          <MangaSectionSkeleton title="Popular Manga" />
+        ) : (
+          <MangaSection
+            title="Popular Manga"
+            data={popularManga}
+            loading={loadingPopular}
+            onPress={handleMangaPress}
+          />
+        )}
         
-        <MangaSection
-          title="New Releases"
-          data={newReleases}
-          loading={loadingNewReleases}
-          onPress={handleMangaPress}
-        />
+        {loadingNewReleases ? (
+          <MangaSectionSkeleton title="New Releases" />
+        ) : (
+          <MangaSection
+            title="New Releases"
+            data={newReleases}
+            loading={loadingNewReleases}
+            onPress={handleMangaPress}
+          />
+        )}
         
-        <MangaSection
-          title="Top Rated"
-          data={topRated}
-          loading={loadingTopRated}
-          onPress={handleMangaPress}
-        />
+        {loadingTopRated ? (
+          <MangaSectionSkeleton title="Top Rated" />
+        ) : (
+          <MangaSection
+            title="Top Rated"
+            data={topRated}
+            loading={loadingTopRated}
+            onPress={handleMangaPress}
+          />
+        )}
       </Animated.ScrollView>
     </View>
   );

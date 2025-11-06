@@ -19,7 +19,6 @@ import VideoPlayerScreen from './screens/VideoPlayerScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import DownloadsScreen from './screens/DownloadsScreen';
 import DownloadedMangaDetailsScreen from './screens/DownloadedMangaDetailsScreen';
-import TorrentStreamScreen from './screens/TorrentStreamScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -116,18 +115,9 @@ function ProfileStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="ProfileMain" component={ProfileScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
-      <Stack.Screen name="TorrentStream" component={TorrentStreamScreen} />
       <Stack.Screen name="CollectionDetails" component={CollectionDetailsScreen} />
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
-      <Stack.Screen 
-        name="VideoPlayer" 
-        component={VideoPlayerScreen}
-        options={{
-          presentation: 'fullScreenModal',
-          animation: 'fade',
-        }}
-      />
     </Stack.Navigator>
   );
 }

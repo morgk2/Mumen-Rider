@@ -3,8 +3,10 @@ import { StyleSheet, Text, View, Animated } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { TrendingSection } from '../components/TrendingSection';
 import { FeaturedContent } from '../components/FeaturedContent';
+import { FeaturedContentSkeleton } from '../components/FeaturedContentSkeleton';
 import { ContinueWatchingSection } from '../components/ContinueWatchingSection';
 import { ContinueReadingSection } from '../components/ContinueReadingSection';
+import { TrendingSectionSkeleton } from '../components/TrendingSectionSkeleton';
 import { TMDBService } from '../services/TMDBService';
 import { WatchProgressService } from '../services/WatchProgressService';
 import { ReadProgressService } from '../services/ReadProgressService';
@@ -19,6 +21,7 @@ export default function HomeScreen({ navigation }) {
   const [loadingMovies, setLoadingMovies] = useState(true);
   const [loadingShows, setLoadingShows] = useState(true);
   const [loadingAnime, setLoadingAnime] = useState(true);
+  const [loadingFeatured, setLoadingFeatured] = useState(true);
   const [continueWatchingItems, setContinueWatchingItems] = useState([]);
   const [loadingContinueWatching, setLoadingContinueWatching] = useState(false);
   const [continueReadingItems, setContinueReadingItems] = useState([]);
@@ -42,6 +45,7 @@ export default function HomeScreen({ navigation }) {
   );
 
   const fetchTrendingContent = async () => {
+    setLoadingFeatured(true);
     // Fetch trending movies
     setLoadingMovies(true);
     const movies = await TMDBService.fetchTrendingMovies();
@@ -70,6 +74,7 @@ export default function HomeScreen({ navigation }) {
     if (featured) {
       setFeaturedItem(featured);
     }
+    setLoadingFeatured(false);
   };
 
   const fetchContinueWatching = async () => {
@@ -239,7 +244,11 @@ export default function HomeScreen({ navigation }) {
         scrollEventThrottle={16}
       >
         {/* Featured Content */}
-        <FeaturedContent item={featuredItem} navigation={navigation} scrollY={scrollY} />
+        {loadingFeatured ? (
+          <FeaturedContentSkeleton />
+        ) : (
+          <FeaturedContent item={featuredItem} navigation={navigation} scrollY={scrollY} />
+        )}
 
         {/* Continue Watching Section */}
         {continueWatchingItems.length > 0 && (
@@ -257,29 +266,41 @@ export default function HomeScreen({ navigation }) {
           />
         )}
 
-        <TrendingSection
-          title="Trending Movies"
-          icon=""
-          items={trendingMovies}
-          onItemPress={handleItemPress}
-          loading={loadingMovies}
-        />
+        {loadingMovies ? (
+          <TrendingSectionSkeleton title="Trending Movies" />
+        ) : (
+          <TrendingSection
+            title="Trending Movies"
+            icon=""
+            items={trendingMovies}
+            onItemPress={handleItemPress}
+            loading={loadingMovies}
+          />
+        )}
 
-        <TrendingSection
-          title="Trending Shows"
-          icon=""
-          items={trendingShows}
-          onItemPress={handleItemPress}
-          loading={loadingShows}
-        />
+        {loadingShows ? (
+          <TrendingSectionSkeleton title="Trending Shows" />
+        ) : (
+          <TrendingSection
+            title="Trending Shows"
+            icon=""
+            items={trendingShows}
+            onItemPress={handleItemPress}
+            loading={loadingShows}
+          />
+        )}
 
-        <TrendingSection
-          title="Trending Anime"
-          icon=""
-          items={trendingAnime}
-          onItemPress={handleItemPress}
-          loading={loadingAnime}
-        />
+        {loadingAnime ? (
+          <TrendingSectionSkeleton title="Trending Anime" />
+        ) : (
+          <TrendingSection
+            title="Trending Anime"
+            icon=""
+            items={trendingAnime}
+            onItemPress={handleItemPress}
+            loading={loadingAnime}
+          />
+        )}
       </Animated.ScrollView>
     </View>
   );

@@ -150,15 +150,95 @@ export default function MangaDetailsScreen({ route, navigation }) {
     }
   };
 
+  // Generate name variations for manga title
+  // Examples: "One-Punch Man" -> ["One Punch Man", "Onepunch-Man", "Onepunch man", "One punch-man", "Onepunchman"]
+  const generateNameVariations = (title) => {
+    if (!title) return [];
+    
+    const variations = new Set();
+    
+    // Split title into words (handling both spaces and hyphens)
+    const words = title.split(/[\s-]+/).filter(w => w.length > 0);
+    
+    if (words.length === 0) return [];
+    
+    // Base variations
+    const withSpaces = words.join(' '); // "One Punch Man"
+    const withHyphens = words.join('-'); // "One-Punch-Man"
+    const noSeparators = words.join(''); // "Onepunchman"
+    
+    variations.add(withSpaces);
+    variations.add(withHyphens);
+    variations.add(noSeparators);
+    
+    // "Onepunch-Man" - first word no separator, rest with hyphen
+    if (words.length > 1) {
+      const firstWord = words[0];
+      const restWithHyphen = words.slice(1).join('-');
+      variations.add(`${firstWord}-${restWithHyphen}`); // "Onepunch-Man"
+      variations.add(`${firstWord}${restWithHyphen}`); // "OnepunchMan" (no hyphen)
+    }
+    
+    // "Onepunch man" - first word no separator, rest with space
+    if (words.length > 1) {
+      const firstWord = words[0];
+      const restWithSpace = words.slice(1).join(' ');
+      variations.add(`${firstWord} ${restWithSpace}`);
+    }
+    
+    // "One punch-man" - first word with space, rest with hyphen
+    if (words.length > 1) {
+      const firstWord = words[0];
+      const restWithHyphen = words.slice(1).join('-');
+      variations.add(`${firstWord} ${restWithHyphen}`);
+    }
+    
+    // Lowercase variations
+    variations.add(title.toLowerCase());
+    variations.add(withSpaces.toLowerCase());
+    variations.add(withHyphens.toLowerCase());
+    variations.add(noSeparators.toLowerCase());
+    
+    // Title case variations
+    const titleCase = words.map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+    variations.add(titleCase);
+    variations.add(titleCase.replace(/\s+/g, '-'));
+    
+    // Filter out empty strings and return as array
+    return Array.from(variations).filter(v => v && v.trim().length > 0);
+  };
+
   const fetchAllmangaChapters = async () => {
     if (!item) return;
     
     setLoadingChapters(true);
     try {
       const mangaTitle = AniListService.getMangaTitle(item);
-      const result = await AllMangaService.findMangaAndChapters(mangaTitle);
       
-      if (result.url) {
+      // Try original title first
+      let result = await AllMangaService.findMangaAndChapters(mangaTitle);
+      
+      // If no results, try name variations
+      if (!result.url || (result.chapters && result.chapters.length === 0)) {
+        console.log('[MangaDetails] No results for original title, trying variations...');
+        const variations = generateNameVariations(mangaTitle);
+        
+        // Remove the original from variations since we already tried it
+        const otherVariations = variations.filter(v => v !== mangaTitle);
+        
+        for (const variation of otherVariations) {
+          console.log('[MangaDetails] Trying variation:', variation);
+          result = await AllMangaService.findMangaAndChapters(variation);
+          
+          // If we found results with chapters, stop trying
+          if (result.url && result.chapters && result.chapters.length > 0) {
+            console.log('[MangaDetails] Found results with variation:', variation);
+            break;
+          }
+        }
+      }
+      
+      if (result.url && result.chapters && result.chapters.length > 0) {
         setAllmangaUrl(result.url);
         setAllmangaChapters(result.chapters || []);
       } else {
