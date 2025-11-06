@@ -53,10 +53,14 @@ jobs:
       - name: Get app info from app.json
         id: app-info
         run: |
-          SCHEME_NAME=$(node -p "require('./app.json').expo.slug" | tr -d '"')
-          # Get the actual binary name (usually same as slug, but check Info.plist if needed)
-          echo "scheme_name=$SCHEME_NAME" >> $GITHUB_OUTPUT
-          echo "binary_name=$SCHEME_NAME" >> $GITHUB_OUTPUT
+          SLUG=$(node -p "require('./app.json').expo.slug" | tr -d '"')
+          APP_NAME=$(node -p "require('./app.json').expo.name" | tr -d '"')
+          # Convert app name to potential scheme name (remove spaces, keep capitalization)
+          APP_NAME_SCHEME=$(echo "$APP_NAME" | sed 's/ //g')
+          echo "scheme_name=$SLUG" >> $GITHUB_OUTPUT
+          echo "app_name=$APP_NAME" >> $GITHUB_OUTPUT
+          echo "app_name_scheme=$APP_NAME_SCHEME" >> $GITHUB_OUTPUT
+          echo "binary_name=$SLUG" >> $GITHUB_OUTPUT
 
       - name: Verify iOS project structure
         id: verify-project
@@ -134,40 +138,79 @@ jobs:
             SCHEMES=$(xcodebuild -project "$BUILD_TARGET" -list 2>/dev/null | awk '/Schemes:/{flag=1; next} /^$/{if(flag) exit} flag' | grep -v "^$" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
           fi
           
-          echo "Available schemes:"
+          echo "All available schemes:"
           echo "$SCHEMES"
           
-          # Try to find the expected scheme first (exact match)
+          # Filter out pod schemes (common pod names)
+          POD_PATTERNS="Pods|EXAV|ExpoModulesCore|React-|RCT|FBLazyVector|hermes-engine|Yoga|ReactCommon|ReactCodegen|ReactNativeDependencies"
+          APP_SCHEMES=$(echo "$SCHEMES" | grep -v -E "$POD_PATTERNS" || echo "$SCHEMES")
+          
+          echo ""
+          echo "Filtered app schemes (excluding pods):"
+          echo "$APP_SCHEMES"
+          
+          # Get app name variations
+          APP_NAME_SCHEME="${{ steps.app-info.outputs.app_name_scheme }}"
+          
+          # Try to find the expected scheme first (exact match) in app schemes
           ACTUAL_SCHEME=""
           while IFS= read -r scheme; do
+            # Try slug match
             if [ "$scheme" = "$EXPECTED_SCHEME" ]; then
               ACTUAL_SCHEME="$scheme"
-              echo "Found exact match: $ACTUAL_SCHEME"
+              echo "Found exact match (slug): $ACTUAL_SCHEME"
               break
             fi
-          done <<< "$SCHEMES"
+            # Try app name match
+            if [ "$scheme" = "$APP_NAME_SCHEME" ]; then
+              ACTUAL_SCHEME="$scheme"
+              echo "Found exact match (app name): $ACTUAL_SCHEME"
+              break
+            fi
+          done <<< "$APP_SCHEMES"
           
-          # If not found, try case-insensitive match
+          # If not found, try case-insensitive match in app schemes
           if [ -z "$ACTUAL_SCHEME" ]; then
             while IFS= read -r scheme; do
-              if [ "$(echo "$scheme" | tr '[:upper:]' '[:lower:]')" = "$(echo "$EXPECTED_SCHEME" | tr '[:upper:]' '[:lower:]')" ]; then
+              SCHEME_LOWER=$(echo "$scheme" | tr '[:upper:]' '[:lower:]')
+              if [ "$SCHEME_LOWER" = "$(echo "$EXPECTED_SCHEME" | tr '[:upper:]' '[:lower:]')" ] || [ "$SCHEME_LOWER" = "$(echo "$APP_NAME_SCHEME" | tr '[:upper:]' '[:lower:]')" ]; then
                 ACTUAL_SCHEME="$scheme"
                 echo "Found case-insensitive match: $ACTUAL_SCHEME"
                 break
               fi
-            done <<< "$SCHEMES"
+            done <<< "$APP_SCHEMES"
           fi
           
-          # If still not found, use the first available scheme
+          # If still not found, use the first app scheme (not a pod)
           if [ -z "$ACTUAL_SCHEME" ]; then
-            ACTUAL_SCHEME=$(echo "$SCHEMES" | head -n 1 | xargs)
+            ACTUAL_SCHEME=$(echo "$APP_SCHEMES" | head -n 1 | xargs)
             if [ -n "$ACTUAL_SCHEME" ]; then
-              echo "Using first available scheme: $ACTUAL_SCHEME"
+              echo "Using first available app scheme: $ACTUAL_SCHEME"
             fi
           fi
           
-          if [ -z "$ACTUAL_SCHEME" ]; then
-            echo "Error: No schemes found!"
+          # Last resort: if no app schemes found, try to find one that produces an app bundle
+          if [ -z "$ACTUAL_SCHEME" ] || [ "$ACTUAL_SCHEME" = "" ]; then
+            echo "No app schemes found, checking which schemes produce app bundles..."
+            # Try to get scheme info to see which produces an app
+            for scheme in $SCHEMES; do
+              if [ "$BUILD_TYPE" = "workspace" ]; then
+                PRODUCT_TYPE=$(xcodebuild -workspace "$BUILD_TARGET" -scheme "$scheme" -showBuildSettings 2>/dev/null | grep "PRODUCT_BUNDLE_IDENTIFIER" | head -n 1 | awk '{print $3}' || echo "")
+              else
+                PRODUCT_TYPE=$(xcodebuild -project "$BUILD_TARGET" -scheme "$scheme" -showBuildSettings 2>/dev/null | grep "PRODUCT_BUNDLE_IDENTIFIER" | head -n 1 | awk '{print $3}' || echo "")
+              fi
+              # If it has a bundle identifier and doesn't look like a pod, use it
+              if [ -n "$PRODUCT_TYPE" ] && ! echo "$scheme" | grep -qE "$POD_PATTERNS"; then
+                ACTUAL_SCHEME="$scheme"
+                echo "Found app scheme by bundle identifier: $ACTUAL_SCHEME"
+                break
+              fi
+            done
+          fi
+          
+          if [ -z "$ACTUAL_SCHEME" ] || [ "$ACTUAL_SCHEME" = "" ]; then
+            echo "Error: No app schemes found!"
+            echo "All schemes: $SCHEMES"
             exit 1
           fi
           
