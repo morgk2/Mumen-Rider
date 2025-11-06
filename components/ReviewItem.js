@@ -118,7 +118,8 @@ const styles = StyleSheet.create({
   expandButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#FF3B30',
+    color: '#fff',
   },
 });
+
 

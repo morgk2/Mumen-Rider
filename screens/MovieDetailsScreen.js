@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   ScrollView,
@@ -13,18 +14,46 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { TMDBService } from '../services/TMDBService';
+import { StorageService } from '../services/StorageService';
+import { CacheService } from '../services/CacheService';
+import { WatchProgressService } from '../services/WatchProgressService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { EpisodeItem } from '../components/EpisodeItem';
 import { CastMember } from '../components/CastMember';
 import { ReviewItem } from '../components/ReviewItem';
+import CollectionPickerModal from '../components/CollectionPickerModal';
+import { CachedImage } from '../components/CachedImage';
+import { Alert } from 'react-native';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const FEATURED_HEIGHT = SCREEN_HEIGHT * 0.6;
 
+// Genre ID to name mapping
+const GENRE_MAP = {
+  28: 'Action',
+  12: 'Adventure',
+  16: 'Animation',
+  35: 'Comedy',
+  80: 'Crime',
+  99: 'Documentary',
+  18: 'Drama',
+  10751: 'Family',
+  14: 'Fantasy',
+  36: 'History',
+  27: 'Horror',
+  10402: 'Music',
+  9648: 'Mystery',
+  10749: 'Romance',
+  878: 'Science Fiction',
+  10770: 'TV Movie',
+  53: 'Thriller',
+  10752: 'War',
+  37: 'Western',
+};
+
 export default function MovieDetailsScreen({ route, navigation }) {
   const { item } = route.params || {};
   const insets = useSafeAreaInsets();
-  const [showFullSynopsis, setShowFullSynopsis] = useState(false);
   const [logoUrl, setLogoUrl] = useState(null);
   const [loadingLogo, setLoadingLogo] = useState(true);
   const [episodes, setEpisodes] = useState([]);
@@ -35,6 +64,11 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const [loadingCast, setLoadingCast] = useState(false);
   const [reviews, setReviews] = useState([]);
   const [loadingReviews, setLoadingReviews] = useState(false);
+  const [isBookmarked, setIsBookmarked] = useState(false);
+  const [isInCollection, setIsInCollection] = useState(false);
+  const [showCollectionPicker, setShowCollectionPicker] = useState(false);
+  const [watchProgress, setWatchProgress] = useState(null);
+  const [latestEpisodeProgress, setLatestEpisodeProgress] = useState(null);
   const scrollY = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -42,6 +76,8 @@ export default function MovieDetailsScreen({ route, navigation }) {
       fetchLogo();
       fetchCastData();
       fetchReviewsData();
+      checkBookmarkStatus();
+      loadWatchProgress();
       const isTVShow = !item.title && (item.name || item.media_type === 'tv');
       if (isTVShow) {
         fetchTVDetails();
@@ -49,6 +85,20 @@ export default function MovieDetailsScreen({ route, navigation }) {
       }
     }
   }, [item]);
+  
+  const checkBookmarkStatus = async () => {
+    if (!item) return;
+    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+    const bookmarked = await StorageService.isBookmarked(item.id, mediaType);
+    setIsBookmarked(bookmarked);
+    
+    // Check if item is in any collection
+    const collections = await StorageService.getCollections();
+    const inCollection = collections.some(collection => 
+      collection.items?.some(i => i.id === item.id && i.media_type === mediaType)
+    );
+    setIsInCollection(inCollection);
+  };
 
   useEffect(() => {
     if (item && (!item.title && (item.name || item.media_type === 'tv'))) {
@@ -56,12 +106,29 @@ export default function MovieDetailsScreen({ route, navigation }) {
     }
   }, [selectedSeason]);
 
+  // Reload progress when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      if (item) {
+        loadWatchProgress();
+      }
+    }, [item])
+  );
+
   const fetchLogo = async () => {
     if (!item) return;
     
     try {
       const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
       const itemId = item.id;
+      
+      // Check cache first
+      const cachedLogo = await CacheService.getCachedLogoUrl(itemId, mediaType);
+      if (cachedLogo) {
+        setLogoUrl(cachedLogo);
+        setLoadingLogo(false);
+        return;
+      }
       
       const response = await fetch(
         `https://api.themoviedb.org/3/${mediaType}/${itemId}/images?api_key=738b4edd0a156cc126dc4a4b8aea4aca`
@@ -72,7 +139,10 @@ export default function MovieDetailsScreen({ route, navigation }) {
       
       if (logo) {
         const logoPath = logo.file_path;
-        setLogoUrl(`https://image.tmdb.org/t/p/w500${logoPath}`);
+        const logoUrl = `https://image.tmdb.org/t/p/w500${logoPath}`;
+        setLogoUrl(logoUrl);
+        // Cache the logo URL
+        await CacheService.cacheLogoUrl(itemId, mediaType, logoUrl);
       }
       setLoadingLogo(false);
     } catch (error) {
@@ -85,9 +155,22 @@ export default function MovieDetailsScreen({ route, navigation }) {
     if (!item || !item.id) return;
     
     try {
+      // Check cache first
+      const cachedDetails = await CacheService.getCachedMediaDetails(item.id, 'tv');
+      if (cachedDetails) {
+        setTvDetails(cachedDetails);
+        const availableSeasons = (cachedDetails.seasons || []).filter(season => season.season_number > 0);
+        if (availableSeasons.length > 0 && availableSeasons[0].season_number !== selectedSeason) {
+          setSelectedSeason(availableSeasons[0].season_number);
+        }
+        return;
+      }
+      
       const details = await TMDBService.fetchTVDetails(item.id);
       if (details) {
         setTvDetails(details);
+        // Cache the details
+        await CacheService.cacheMediaDetails(item.id, 'tv', details);
         // Set initial season to first available season
         const availableSeasons = (details.seasons || []).filter(season => season.season_number > 0);
         if (availableSeasons.length > 0 && availableSeasons[0].season_number !== selectedSeason) {
@@ -114,13 +197,31 @@ export default function MovieDetailsScreen({ route, navigation }) {
     }
   };
 
-  const handleEpisodePress = (episode) => {
+  const handleEpisodePress = async (episode) => {
     if (navigation && item && episode) {
+      // Check for progress for this specific episode
+      let resumePosition = null;
+      try {
+        const mediaType = item.media_type || 'tv';
+        const progress = await WatchProgressService.getProgress(
+          item.id,
+          mediaType,
+          selectedSeason,
+          episode.episode_number
+        );
+        if (progress) {
+          resumePosition = progress.position;
+        }
+      } catch (error) {
+        console.error('Error loading episode progress:', error);
+      }
+      
       navigation.navigate('VideoPlayer', {
         item,
         episode,
         season: selectedSeason,
         episodeNumber: episode.episode_number,
+        resumePosition,
       });
     }
   };
@@ -179,15 +280,214 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const isTVShow = !item.title && (item.name || item.media_type === 'tv');
   const seasons = (tvDetails?.seasons || []).filter(season => season.season_number > 0);
 
-  const handlePlay = () => {
-    if (navigation && item) {
-      navigation.navigate('VideoPlayer', { item });
+  // Get genres - check item.genres, tvDetails.genres, or map from genre_ids
+  const getGenres = () => {
+    if (item.genres && item.genres.length > 0) {
+      return item.genres.map(g => g.name || g);
+    }
+    if (tvDetails?.genres && tvDetails.genres.length > 0) {
+      return tvDetails.genres.map(g => g.name || g);
+    }
+    if (item.genre_ids && item.genre_ids.length > 0) {
+      return item.genre_ids
+        .map(id => GENRE_MAP[id])
+        .filter(Boolean)
+        .slice(0, 3); // Limit to 3 genres
+    }
+    return [];
+  };
+  const genres = getGenres();
+  const rating = item.vote_average || 0;
+
+  // Get play button text and icon
+  const getPlayButtonInfo = () => {
+    const isTVShow = !item.title && (item.name || item.media_type === 'tv');
+    
+    if (isTVShow && latestEpisodeProgress) {
+      const { season, episodeNumber } = latestEpisodeProgress;
+      const episodeStr = String(episodeNumber).padStart(2, '0');
+      const seasonStr = String(season).padStart(2, '0');
+      return {
+        icon: "play-forward",
+        text: `Continue Watching E${episodeStr}S${seasonStr}`
+      };
+    } else if (watchProgress) {
+      return {
+        icon: "play-forward",
+        text: 'Continue Watching'
+      };
+    } else {
+      return {
+        icon: "play",
+        text: 'Play'
+      };
+    }
+  };
+  
+  const playButtonInfo = getPlayButtonInfo();
+
+  const loadWatchProgress = async () => {
+    if (!item || !item.id) return;
+    
+    try {
+      const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+      const isTVShow = !item.title && (item.name || item.media_type === 'tv');
+      
+      if (isTVShow) {
+        // For TV shows, get all progress and find the latest episode
+        const allProgress = await WatchProgressService.getAllProgress();
+        
+        // Find all episodes with progress for this show
+        const episodeProgresses = Object.values(allProgress).filter(progress => {
+          return progress.itemId === item.id && 
+                 progress.mediaType === mediaType &&
+                 progress.season !== null &&
+                 progress.episodeNumber !== null;
+        });
+        
+        if (episodeProgresses.length > 0) {
+          // Sort by last watched (most recent first), then by season/episode
+          episodeProgresses.sort((a, b) => {
+            const dateA = new Date(a.lastWatched);
+            const dateB = new Date(b.lastWatched);
+            if (dateB - dateA !== 0) {
+              return dateB - dateA;
+            }
+            // If same date, sort by season then episode
+            if (b.season !== a.season) {
+              return b.season - a.season;
+            }
+            return b.episodeNumber - a.episodeNumber;
+          });
+          
+          setLatestEpisodeProgress(episodeProgresses[0]);
+        } else {
+          setLatestEpisodeProgress(null);
+        }
+        setWatchProgress(null); // Clear movie progress for TV shows
+      } else {
+        // For movies, get single progress
+        const progress = await WatchProgressService.getProgress(item.id, mediaType);
+        setWatchProgress(progress);
+        setLatestEpisodeProgress(null);
+      }
+    } catch (error) {
+      console.error('Error loading watch progress:', error);
     }
   };
 
-  const handleBookmark = () => {
-    console.log('Bookmark pressed:', item);
-    // TODO: Add to bookmarks
+  const handlePlay = async () => {
+    if (!navigation || !item) return;
+    
+    const isTVShow = !item.title && (item.name || item.media_type === 'tv');
+    
+    if (isTVShow) {
+      // For TV shows
+      if (latestEpisodeProgress) {
+        // Play the latest episode with progress
+        const { season, episodeNumber, position } = latestEpisodeProgress;
+        
+        // Fetch episode data for this season/episode
+        try {
+          const episodesData = await TMDBService.fetchTVEpisodes(item.id, season);
+          const episode = episodesData.find(ep => ep.episode_number === episodeNumber);
+          
+          if (episode) {
+            navigation.navigate('VideoPlayer', {
+              item,
+              episode,
+              season,
+              episodeNumber,
+              resumePosition: position,
+            });
+          } else {
+            // Fallback: play S01E01
+            const season1Episodes = await TMDBService.fetchTVEpisodes(item.id, 1);
+            const firstEpisode = season1Episodes.find(ep => ep.episode_number === 1);
+            if (firstEpisode) {
+              navigation.navigate('VideoPlayer', {
+                item,
+                episode: firstEpisode,
+                season: 1,
+                episodeNumber: 1,
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching episode for play:', error);
+          // Fallback: try to play S01E01
+          try {
+            const season1Episodes = await TMDBService.fetchTVEpisodes(item.id, 1);
+            const firstEpisode = season1Episodes.find(ep => ep.episode_number === 1);
+            if (firstEpisode) {
+              navigation.navigate('VideoPlayer', {
+                item,
+                episode: firstEpisode,
+                season: 1,
+                episodeNumber: 1,
+              });
+            }
+          } catch (fallbackError) {
+            console.error('Error fetching S01E01:', fallbackError);
+          }
+        }
+      } else {
+        // No progress - play S01E01
+        try {
+          const season1Episodes = await TMDBService.fetchTVEpisodes(item.id, 1);
+          const firstEpisode = season1Episodes.find(ep => ep.episode_number === 1);
+          if (firstEpisode) {
+            navigation.navigate('VideoPlayer', {
+              item,
+              episode: firstEpisode,
+              season: 1,
+              episodeNumber: 1,
+            });
+          }
+        } catch (error) {
+          console.error('Error fetching S01E01:', error);
+        }
+      }
+    } else {
+      // For movies
+      const resumePosition = watchProgress ? watchProgress.position : null;
+      navigation.navigate('VideoPlayer', { 
+        item,
+        resumePosition 
+      });
+    }
+  };
+
+  const handleBookmark = async () => {
+    if (!item) return;
+    
+    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+    
+    if (isBookmarked) {
+      // Remove bookmark
+      const success = await StorageService.removeBookmark(item.id, mediaType);
+      if (success) {
+        setIsBookmarked(false);
+      }
+    } else {
+      // Add to bookmarks
+      const success = await StorageService.saveBookmark(item);
+      if (success) {
+        setIsBookmarked(true);
+      }
+    }
+  };
+
+  const handleAddToCollection = () => {
+    if (!item) return;
+    // Show collection picker to add to collection
+    setShowCollectionPicker(true);
+  };
+
+  const handleItemAddedToCollection = (collection) => {
+    // Update UI to show item is in collection
+    setIsInCollection(true);
+    console.log('Item added to collection:', collection.name);
   };
 
   const headerTranslateY = scrollY.interpolate({
@@ -198,7 +498,19 @@ export default function MovieDetailsScreen({ route, navigation }) {
 
   const headerScale = scrollY.interpolate({
     inputRange: [-300, 0],
-    outputRange: [2, 1],
+    outputRange: [1.3, 0.75],
+    extrapolate: 'clamp',
+  });
+
+  // Compensate for scale to keep center anchor point
+  // When scaling from top-left, center moves down, so we translate up to compensate
+  const containerHeight = FEATURED_HEIGHT + 150;
+  const headerScaleCompensation = scrollY.interpolate({
+    inputRange: [-300, 0],
+    outputRange: [
+      -(containerHeight * (1.3 - 0.75)) / 2,
+      0
+    ],
     extrapolate: 'clamp',
   });
 
@@ -222,14 +534,14 @@ export default function MovieDetailsScreen({ route, navigation }) {
               styles.backdropContainer,
               {
                 transform: [
-                  { translateY: headerTranslateY },
+                  { translateY: Animated.add(headerTranslateY, headerScaleCompensation) },
                   { scale: headerScale },
                 ],
               },
             ]}
           >
             {backdropUrl || posterUrl ? (
-              <Image
+              <CachedImage
                 source={{ uri: backdropUrl || posterUrl }}
                 style={styles.backdrop}
                 resizeMode="cover"
@@ -249,7 +561,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
           {/* Title Section */}
           <View style={styles.titleContainer}>
             {logoUrl ? (
-              <Image
+              <CachedImage
                 source={{ uri: logoUrl }}
                 style={styles.titleLogo}
                 resizeMode="contain"
@@ -263,44 +575,34 @@ export default function MovieDetailsScreen({ route, navigation }) {
 
           {/* Date and Info Section */}
           <View style={styles.infoSection}>
-            {/* Date */}
-            {formattedDate && (
-              <View style={styles.dateRow}>
-                <Ionicons name="calendar" size={16} color="#FF3B30" style={{ marginRight: 4 }} />
-                <Text style={styles.dateText}>{formattedDate}</Text>
+            <View style={styles.infoRow}>
+              {/* Rating */}
+              {rating > 0 && (
+                <View style={styles.infoItem}>
+                  <Ionicons name="star" size={16} color="#ffd700" style={{ marginRight: 4 }} />
+                  <Text style={styles.infoText}>{rating.toFixed(1)}</Text>
+                </View>
+              )}
+              
+              {/* Date */}
+              {formattedDate && (
+                <View style={styles.infoItem}>
+                  <Ionicons name="calendar" size={16} color="#fff" style={{ marginRight: 4 }} />
+                  <Text style={styles.infoText}>{formattedDate}</Text>
+                </View>
+              )}
+            </View>
+            
+            {/* Genres */}
+            {genres.length > 0 && (
+              <View style={styles.genresContainer}>
+                {genres.map((genre, index) => (
+                  <View key={index} style={styles.genreChip}>
+                    <Text style={styles.genreText}>{genre}</Text>
+                  </View>
+                ))}
               </View>
             )}
-
-            {/* Synopsis */}
-            {overview ? (
-              <View style={styles.synopsisContainer}>
-                <View style={styles.synopsisWrapper}>
-                  <Text
-                    style={styles.synopsis}
-                    numberOfLines={showFullSynopsis ? undefined : 3}
-                    ellipsizeMode="tail"
-                  >
-                    {overview}
-                  </Text>
-                  {!showFullSynopsis && (
-                    <LinearGradient
-                      colors={['transparent', 'rgba(0,0,0,0.6)', 'rgba(0,0,0,0.95)']}
-                      locations={[0.5, 0.85, 1]}
-                      style={styles.synopsisFade}
-                      pointerEvents="none"
-                    />
-                  )}
-                </View>
-                <TouchableOpacity
-                  onPress={() => setShowFullSynopsis(!showFullSynopsis)}
-                  style={styles.moreButton}
-                >
-                  <Text style={styles.moreText}>
-                    {showFullSynopsis ? 'LESS' : 'MORE'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            ) : null}
           </View>
         </View>
 
@@ -313,16 +615,42 @@ export default function MovieDetailsScreen({ route, navigation }) {
               onPress={handlePlay}
               activeOpacity={0.8}
             >
-              <Ionicons name="play" size={20} color="#000" />
-              <Text style={styles.playButtonText}>Play</Text>
+              <Ionicons name={playButtonInfo.icon} size={20} color="#000" />
+              <Text style={styles.playButtonText}>
+                {playButtonInfo.text}
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.bookmarkButton, { marginLeft: 12 }]}
+              style={[
+                styles.bookmarkButton,
+                { marginLeft: 12 },
+                isBookmarked && styles.bookmarkButtonActive,
+              ]}
               onPress={handleBookmark}
               activeOpacity={0.8}
             >
-              <Ionicons name="add" size={24} color="#fff" />
+              <Ionicons
+                name={isBookmarked ? 'bookmark' : 'bookmark-outline'}
+                size={24}
+                color={isBookmarked ? '#000' : '#fff'}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.collectionButton,
+                { marginLeft: 12 },
+                isInCollection && styles.collectionButtonActive,
+              ]}
+              onPress={handleAddToCollection}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={isInCollection ? 'checkmark' : 'add'}
+                size={24}
+                color={isInCollection ? '#000' : '#fff'}
+              />
             </TouchableOpacity>
           </View>
 
@@ -357,7 +685,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
                             isSelected && styles.seasonPosterContainerActive,
                           ]}>
                             {seasonPosterUrl ? (
-                              <Image
+                              <CachedImage
                                 source={{ uri: seasonPosterUrl }}
                                 style={styles.seasonPoster}
                                 resizeMode="cover"
@@ -369,7 +697,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
                             )}
                             {isSelected && (
                               <View style={styles.seasonSelectedOverlay}>
-                                <Ionicons name="checkmark-circle" size={24} color="#FF3B30" />
+                                <Ionicons name="checkmark-circle" size={24} color="#fff" />
                               </View>
                             )}
                           </View>
@@ -385,7 +713,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
 
               {loadingEpisodes ? (
                 <View style={styles.loadingContainer}>
-                  <ActivityIndicator size="large" color="#FF3B30" />
+                  <ActivityIndicator size="large" color="#fff" />
                   <Text style={styles.loadingText}>Loading episodes...</Text>
                 </View>
               ) : episodes.length > 0 ? (
@@ -394,6 +722,8 @@ export default function MovieDetailsScreen({ route, navigation }) {
                     <EpisodeItem
                       key={episode.id}
                       episode={episode}
+                      tvShow={item}
+                      season={selectedSeason}
                       onPress={handleEpisodePress}
                     />
                   ))}
@@ -411,7 +741,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
             <Text style={styles.castTitle}>Cast</Text>
             {loadingCast ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="small" color="#FF3B30" />
+                <ActivityIndicator size="small" color="#fff" />
               </View>
             ) : cast.length > 0 ? (
               <ScrollView
@@ -439,7 +769,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
             <Text style={styles.reviewsTitle}>Reviews</Text>
             {loadingReviews ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="small" color="#FF3B30" />
+                <ActivityIndicator size="small" color="#fff" />
                 <Text style={styles.loadingText}>Loading reviews...</Text>
               </View>
             ) : reviews.length > 0 ? (
@@ -470,6 +800,14 @@ export default function MovieDetailsScreen({ route, navigation }) {
           <Ionicons name="chevron-back" size={24} color="#fff" />
         </TouchableOpacity>
       </View>
+
+      {/* Collection Picker Modal */}
+      <CollectionPickerModal
+        visible={showCollectionPicker}
+        onClose={() => setShowCollectionPicker(false)}
+        item={item}
+        onItemAdded={handleItemAddedToCollection}
+      />
     </View>
   );
 }
@@ -492,11 +830,11 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   backdropContainer: {
-    width: SCREEN_WIDTH,
+    width: SCREEN_WIDTH * 1.33,
     height: FEATURED_HEIGHT + 150,
     position: 'absolute',
     top: -75,
-    left: 0,
+    left: -SCREEN_WIDTH * 0.165,
   },
   backdrop: {
     width: '100%',
@@ -539,7 +877,7 @@ const styles = StyleSheet.create({
   },
   infoSection: {
     position: 'absolute',
-    bottom: -40,
+    bottom: -10,
     left: 20,
     right: 20,
     alignItems: 'center',
@@ -550,6 +888,50 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 0,
     marginBottom: 12,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    marginBottom: 12,
+  },
+  infoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 8,
+    marginVertical: 4,
+  },
+  infoText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  genresContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  genreChip: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginHorizontal: 4,
+    marginVertical: 4,
+  },
+  genreText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#fff',
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
   synopsisContainer: {
     width: '100%',
@@ -584,7 +966,7 @@ const styles = StyleSheet.create({
   moreText: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#FF3B30',
+    color: '#fff',
   },
   contentSection: {
     padding: 16,
@@ -596,7 +978,7 @@ const styles = StyleSheet.create({
   dateText: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#FF3B30',
+    color: '#fff',
   },
   actionSection: {
     flexDirection: 'row',
@@ -628,6 +1010,24 @@ const styles = StyleSheet.create({
     borderColor: '#fff',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  bookmarkButtonActive: {
+    backgroundColor: '#fff',
+    borderColor: '#fff',
+  },
+  collectionButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    borderWidth: 2,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  collectionButtonActive: {
+    backgroundColor: '#fff',
+    borderColor: '#fff',
   },
   navOverlay: {
     position: 'absolute',
@@ -682,7 +1082,7 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   seasonPosterContainerActive: {
-    borderColor: '#FF3B30',
+    borderColor: '#fff',
   },
   seasonPoster: {
     width: '100%',
@@ -712,7 +1112,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   seasonCardTextActive: {
-    color: '#FF3B30',
+    color: '#fff',
     fontWeight: 'bold',
   },
   episodesList: {

@@ -1,23 +1,26 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { TMDBService } from '../services/TMDBService';
 import { CachedImage } from './CachedImage';
 
-export const TrendingItem = ({ item, onPress, variant = 'horizontal' }) => {
-  const posterURL = TMDBService.getPosterURL(item.poster_path);
-  const displayTitle = item.title || item.name || 'Unknown';
-  const displayDate = item.release_date || item.first_air_date || '';
+export const BookmarkItem = ({ item, onPress, onRemove }) => {
+  // For manga items, poster_path is already a full URL from AniList
+  // For movie/TV items, we need to use TMDBService to get the full URL
+  const posterURL = item.media_type === 'manga' 
+    ? item.poster_path 
+    : TMDBService.getPosterURL(item.poster_path);
+  const displayTitle = item.title || 'Unknown';
+  const displayDate = item.release_date || '';
   const year = displayDate ? displayDate.substring(0, 4) : '';
-
-  const isGrid = variant === 'grid';
 
   return (
     <TouchableOpacity 
-      style={[styles.container, isGrid && styles.gridContainer]}
+      style={styles.container}
       onPress={() => onPress && onPress(item)}
       activeOpacity={0.8}
     >
-      <View style={[styles.posterContainer, isGrid && styles.gridPosterContainer]}>
+      <View style={styles.posterContainer}>
         {posterURL ? (
           <CachedImage
             source={{ uri: posterURL }}
@@ -26,18 +29,12 @@ export const TrendingItem = ({ item, onPress, variant = 'horizontal' }) => {
           />
         ) : (
           <View style={styles.placeholder}>
-            <Text style={styles.placeholderText}>No Image</Text>
-          </View>
-        )}
-        
-        {item.vote_average > 0 && (
-          <View style={styles.ratingBadge}>
-            <Text style={styles.ratingText}>★ {item.vote_average.toFixed(1)}</Text>
+            <Ionicons name="image-outline" size={32} color="#666" />
           </View>
         )}
       </View>
 
-      <View style={[styles.infoContainer, isGrid && styles.gridInfoContainer]}>
+      <View style={styles.infoContainer}>
         <Text style={styles.title} numberOfLines={2}>
           {displayTitle}
         </Text>
@@ -45,6 +42,16 @@ export const TrendingItem = ({ item, onPress, variant = 'horizontal' }) => {
           <Text style={styles.year}>{year}</Text>
         ) : null}
       </View>
+
+      {onRemove && (
+        <TouchableOpacity
+          style={styles.removeButton}
+          onPress={() => onRemove(item)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="close-circle" size={24} color="#fff" />
+        </TouchableOpacity>
+      )}
     </TouchableOpacity>
   );
 };
@@ -53,10 +60,7 @@ const styles = StyleSheet.create({
   container: {
     width: 140,
     marginRight: 12,
-  },
-  gridContainer: {
-    width: '100%',
-    marginRight: 0,
+    position: 'relative',
   },
   posterContainer: {
     width: 140,
@@ -65,10 +69,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#1a1a1a',
     marginBottom: 8,
-  },
-  gridPosterContainer: {
-    width: '100%',
-    aspectRatio: 2 / 3,
   },
   poster: {
     width: '100%',
@@ -81,29 +81,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#2a2a2a',
   },
-  placeholderText: {
-    color: '#666',
-    fontSize: 12,
-  },
-  ratingBadge: {
-    position: 'absolute',
-    bottom: 8,
-    right: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  ratingText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '600',
-  },
   infoContainer: {
     width: 140,
-  },
-  gridInfoContainer: {
-    width: '100%',
   },
   title: {
     fontSize: 14,
@@ -114,6 +93,14 @@ const styles = StyleSheet.create({
   year: {
     fontSize: 12,
     color: '#888',
+  },
+  removeButton: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 12,
+    padding: 2,
   },
 });
 

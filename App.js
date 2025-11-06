@@ -10,11 +10,15 @@ import { Ionicons } from '@expo/vector-icons';
 import HomeScreen from './screens/HomeScreen';
 import SearchScreen from './screens/SearchScreen';
 import ProfileScreen from './screens/ProfileScreen';
+import CollectionDetailsScreen from './screens/CollectionDetailsScreen';
 import MangaScreen from './screens/MangaScreen';
 import MovieDetailsScreen from './screens/MovieDetailsScreen';
 import MangaDetailsScreen from './screens/MangaDetailsScreen';
 import MangaReaderScreen from './screens/MangaReaderScreen';
 import VideoPlayerScreen from './screens/VideoPlayerScreen';
+import SettingsScreen from './screens/SettingsScreen';
+import DownloadsScreen from './screens/DownloadsScreen';
+import DownloadedMangaDetailsScreen from './screens/DownloadedMangaDetailsScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -24,9 +28,18 @@ function HomeStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="HomeMain" component={HomeScreen} />
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
+      <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
       <Stack.Screen 
         name="VideoPlayer" 
         component={VideoPlayerScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          animation: 'fade',
+        }}
+      />
+      <Stack.Screen 
+        name="MangaReader" 
+        component={MangaReaderScreen}
         options={{
           presentation: 'fullScreenModal',
           animation: 'fade',
@@ -70,6 +83,45 @@ function MangaStack() {
   );
 }
 
+function DownloadsStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="DownloadsMain" component={DownloadsScreen} />
+      <Stack.Screen name="DownloadedMangaDetails" component={DownloadedMangaDetailsScreen} />
+      <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
+      <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
+      <Stack.Screen 
+        name="VideoPlayer" 
+        component={VideoPlayerScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          animation: 'fade',
+        }}
+      />
+      <Stack.Screen 
+        name="MangaReader" 
+        component={MangaReaderScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          animation: 'fade',
+        }}
+      />
+    </Stack.Navigator>
+  );
+}
+
+function ProfileStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="ProfileMain" component={ProfileScreen} />
+      <Stack.Screen name="Settings" component={SettingsScreen} />
+      <Stack.Screen name="CollectionDetails" component={CollectionDetailsScreen} />
+      <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
+      <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
+    </Stack.Navigator>
+  );
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -78,7 +130,7 @@ export default function App() {
         <Tab.Navigator
           screenOptions={{
             headerShown: false,
-            tabBarActiveTintColor: '#FF3B30',
+            tabBarActiveTintColor: '#fff',
             tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.6)',
             tabBarBackground: () => {
               if (Platform.OS === 'ios') {
@@ -131,7 +183,7 @@ export default function App() {
           component={HomeStack}
           options={{
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="home" size={size || 24} color={color || '#FF3B30'} />
+              <Ionicons name="home" size={size || 24} color={color || '#fff'} />
             ),
           }}
         />
@@ -140,7 +192,7 @@ export default function App() {
           component={SearchStack}
           options={{
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="search" size={size || 24} color={color || '#FF3B30'} />
+              <Ionicons name="search" size={size || 24} color={color || '#fff'} />
             ),
           }}
         />
@@ -149,16 +201,25 @@ export default function App() {
           component={MangaStack}
           options={{
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="book" size={size || 24} color={color || '#FF3B30'} />
+              <Ionicons name="book" size={size || 24} color={color || '#fff'} />
+            ),
+          }}
+        />
+        <Tab.Screen
+          name="Downloads"
+          component={DownloadsStack}
+          options={{
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="download" size={size || 24} color={color || '#fff'} />
             ),
           }}
         />
         <Tab.Screen
           name="Profile"
-          component={ProfileScreen}
+          component={ProfileStack}
           options={{
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="person" size={size || 24} color={color || '#FF3B30'} />
+              <Ionicons name="person" size={size || 24} color={color || '#fff'} />
             ),
           }}
         />

@@ -20,9 +20,20 @@ export const FeaturedContent = ({ item, navigation, scrollY }) => {
 
   const headerScale = scrollY ? scrollY.interpolate({
     inputRange: [-300, 0],
-    outputRange: [2, 1],
+    outputRange: [1.3, 0.75],
     extrapolate: 'clamp',
-  }) : 1;
+  }) : 0.75;
+
+  // Compensate for scale to keep center anchor point
+  const containerHeight = FEATURED_HEIGHT + 150;
+  const headerScaleCompensation = scrollY ? scrollY.interpolate({
+    inputRange: [-300, 0],
+    outputRange: [
+      -(containerHeight * (1.3 - 0.75)) / 2,
+      0
+    ],
+    extrapolate: 'clamp',
+  }) : 0;
 
   useEffect(() => {
     if (item) {
@@ -60,7 +71,6 @@ export const FeaturedContent = ({ item, navigation, scrollY }) => {
 
   const backdropUrl = TMDBService.getBackdropURL(item.backdrop_path, 'original');
   const displayTitle = item.title || item.name || '';
-  const overview = item.overview || '';
 
   const handleWatchNow = () => {
     if (navigation && item) {
@@ -80,7 +90,7 @@ export const FeaturedContent = ({ item, navigation, scrollY }) => {
           styles.backdropContainer,
           {
             transform: [
-              { translateY: headerTranslateY },
+              { translateY: Animated.add(headerTranslateY, headerScaleCompensation) },
               { scale: headerScale },
             ],
           },
@@ -121,13 +131,6 @@ export const FeaturedContent = ({ item, navigation, scrollY }) => {
           )}
         </View>
 
-        {/* Description */}
-        {overview ? (
-          <Text style={styles.description} numberOfLines={3} ellipsizeMode="tail">
-            {overview}
-          </Text>
-        ) : null}
-
         {/* Buttons */}
         <View style={styles.buttonContainer}>
           <TouchableOpacity
@@ -160,11 +163,11 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   backdropContainer: {
-    width: SCREEN_WIDTH,
+    width: SCREEN_WIDTH * 1.33,
     height: FEATURED_HEIGHT + 150,
     position: 'absolute',
     top: -75,
-    left: 0,
+    left: -SCREEN_WIDTH * 0.165,
   },
   backdrop: {
     width: '100%',
@@ -208,18 +211,6 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 10,
     textAlign: 'center',
-  },
-  description: {
-    fontSize: 14,
-    color: '#fff',
-    textAlign: 'center',
-    marginTop: -40,
-    marginBottom: 16,
-    paddingHorizontal: 20,
-    lineHeight: 20,
-    textShadowColor: 'rgba(0, 0, 0, 0.75)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
   },
   buttonContainer: {
     flexDirection: 'row',

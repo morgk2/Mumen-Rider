@@ -1,0 +1,124 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - release
+  pull_request:
+    branches:
+      - main
+      - master
+      - release
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build Unsigned IPA
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate iOS project
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Setup CocoaPods
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.1'
+          bundler-cache: true
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: |
+          pod install --repo-update
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Get app info from app.json
+        id: app-info
+        run: |
+          SCHEME_NAME=$(node -p "require('./app.json').expo.slug" | tr -d '"')
+          # Get the actual binary name (usually same as slug, but check Info.plist if needed)
+          echo "scheme_name=$SCHEME_NAME" >> $GITHUB_OUTPUT
+          echo "binary_name=$SCHEME_NAME" >> $GITHUB_OUTPUT
+
+      - name: Build iOS app (unsigned)
+        working-directory: ios
+        run: |
+          xcodebuild -workspace "${{ steps.app-info.outputs.scheme_name }}.xcworkspace" \
+            -scheme "${{ steps.app-info.outputs.scheme_name }}" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ./build/DerivedData \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+      - name: Prepare app bundle
+        run: |
+          mkdir -p build
+          APP_PATH="ios/build/DerivedData/Build/Products/Release-iphoneos/${{ steps.app-info.outputs.scheme_name }}.app"
+          TARGET_APP="build/${{ steps.app-info.outputs.scheme_name }}.app"
+          
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: App bundle not found at $APP_PATH"
+            echo "Listing build directory:"
+            ls -la ios/build/DerivedData/Build/Products/Release-iphoneos/ || true
+            exit 1
+          fi
+          
+          cp -r "$APP_PATH" "$TARGET_APP"
+          
+          # Remove code signing
+          codesign --remove "$TARGET_APP" 2>/dev/null || true
+          if [ -e "$TARGET_APP/_CodeSignature" ]; then
+            rm -rf "$TARGET_APP/_CodeSignature"
+          fi
+          if [ -e "$TARGET_APP/embedded.mobileprovision" ]; then
+            rm -rf "$TARGET_APP/embedded.mobileprovision"
+          fi
+
+      - name: Create IPA
+        run: |
+          cd build
+          mkdir -p Payload
+          cp -r "${{ steps.app-info.outputs.scheme_name }}.app" "Payload/${{ steps.app-info.outputs.scheme_name }}.app"
+          
+          # Strip binary if it exists (binary name matches scheme name in Expo projects)
+          BINARY_PATH="Payload/${{ steps.app-info.outputs.scheme_name }}.app/${{ steps.app-info.outputs.binary_name }}"
+          if [ -f "$BINARY_PATH" ]; then
+            strip "$BINARY_PATH" || true
+          fi
+          
+          zip -r "${{ steps.app-info.outputs.scheme_name }}.ipa" Payload
+          rm -rf "${{ steps.app-info.outputs.scheme_name }}.app"
+          rm -rf Payload
+          
+          echo "IPA created: ${{ steps.app-info.outputs.scheme_name }}.ipa"
+          ls -lh "${{ steps.app-info.outputs.scheme_name }}.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iOS-Build-IPA
+          path: build/${{ steps.app-info.outputs.scheme_name }}.ipa
+          retention-days: 30
+

@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-export const ChapterItem = ({ chapter, onPress }) => {
+export const ChapterItem = ({ chapter, onPress, onDownload, isDownloaded, isDownloading }) => {
   const chapterNumber = chapter.number || chapter.chapterNumber || 'N/A';
   const chapterTitle = chapter.title || chapter.chapterTitle || 'Untitled Chapter';
   const chapterDate = chapter.date || chapter.releaseDate || null;
@@ -24,7 +24,26 @@ export const ChapterItem = ({ chapter, onPress }) => {
           {chapterTitle}
         </Text>
       </View>
-      <Ionicons name="chevron-forward" size={20} color="rgba(255, 255, 255, 0.5)" />
+      <View style={styles.actions}>
+        {onDownload && (
+          <TouchableOpacity
+            style={styles.downloadButton}
+            onPress={(e) => {
+              e.stopPropagation();
+              onDownload && onDownload(chapter);
+            }}
+            activeOpacity={0.7}
+            disabled={isDownloading}
+          >
+            <Ionicons
+              name={isDownloaded ? "checkmark-circle" : isDownloading ? "hourglass" : "download-outline"}
+              size={20}
+              color={isDownloaded ? "#4CAF50" : isDownloading ? "#FFA500" : "#fff"}
+            />
+          </TouchableOpacity>
+        )}
+        <Ionicons name="chevron-forward" size={20} color="rgba(255, 255, 255, 0.5)" />
+      </View>
     </TouchableOpacity>
   );
 };
@@ -52,7 +71,7 @@ const styles = StyleSheet.create({
   chapterNumber: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#FF3B30',
+    color: '#fff',
   },
   chapterDate: {
     fontSize: 12,
@@ -63,5 +82,14 @@ const styles = StyleSheet.create({
     color: '#fff',
     lineHeight: 20,
   },
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  downloadButton: {
+    padding: 4,
+  },
 });
+
 

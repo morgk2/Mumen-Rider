@@ -8,7 +8,7 @@ export function MangaSection({ title, data, loading, onPress }) {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>{title}</Text>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="small" color="#FF3B30" />
+          <ActivityIndicator size="small" color="#fff" />
         </View>
       </View>
     );

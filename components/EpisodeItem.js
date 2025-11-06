@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, Image, StyleSheet, TouchableOpacity } from 'react-native';
 import { TMDBService } from '../services/TMDBService';
 
-export const EpisodeItem = ({ episode, onPress }) => {
+export const EpisodeItem = ({ episode, tvShow, season, onPress }) => {
   const thumbnailUrl = TMDBService.getStillURL(episode.still_path);
   const episodeNumber = episode.episode_number || 0;
   const episodeName = episode.name || `Episode ${episodeNumber}`;

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   ScrollView,
@@ -9,15 +10,22 @@ import {
   Dimensions,
   ActivityIndicator,
   Animated,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { AniListService } from '../services/AniListService';
 import { AllMangaService } from '../services/AllMangaService';
+import { CacheService } from '../services/CacheService';
+import { StorageService } from '../services/StorageService';
+import { ReadProgressService } from '../services/ReadProgressService';
+import { DownloadService } from '../services/DownloadService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChapterItem } from '../components/ChapterItem';
 import { CastMember } from '../components/CastMember';
 import { ReviewItem } from '../components/ReviewItem';
+import CollectionPickerModal from '../components/CollectionPickerModal';
+import { CachedImage } from '../components/CachedImage';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const FEATURED_HEIGHT = SCREEN_HEIGHT * 0.6;
@@ -33,23 +41,86 @@ export default function MangaDetailsScreen({ route, navigation }) {
   const [loadingChapters, setLoadingChapters] = useState(false);
   const [allmangaUrl, setAllmangaUrl] = useState(null);
   const [chapterOrderAscending, setChapterOrderAscending] = useState(false); // false = newest first, true = oldest first
+  const [showCollectionPicker, setShowCollectionPicker] = useState(false);
+  const [isBookmarked, setIsBookmarked] = useState(false);
+  const [isInCollection, setIsInCollection] = useState(false);
+  const [latestChapterProgress, setLatestChapterProgress] = useState(null);
+  const [downloadedChapters, setDownloadedChapters] = useState(new Set());
+  const [downloadingChapters, setDownloadingChapters] = useState(new Set());
   const scrollY = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (item && item.id) {
       fetchMangaDetails();
       fetchAllmangaChapters();
+      checkBookmarkStatus();
+      loadReadingProgress();
+      loadDownloadedChapters();
     }
   }, [item]);
+
+  // Reload progress when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      if (item) {
+        loadReadingProgress();
+        loadDownloadedChapters();
+      }
+    }, [item])
+  );
+
+  const checkBookmarkStatus = async () => {
+    if (!item) return;
+    const bookmarked = await StorageService.isBookmarked(item.id, 'manga');
+    setIsBookmarked(bookmarked);
+    
+    // Check if item is in any collection
+    const collections = await StorageService.getCollections();
+    const inCollection = collections.some(collection => 
+      collection.items?.some(i => i.id === item.id && i.media_type === 'manga')
+    );
+    setIsInCollection(inCollection);
+  };
 
   const fetchMangaDetails = async () => {
     if (!item || !item.id) return;
     
     setLoadingDetails(true);
     try {
+      // Check cache first
+      const cachedDetails = await CacheService.getCachedMangaDetails(item.id);
+      if (cachedDetails) {
+        setMangaDetails(cachedDetails);
+        // Extract characters
+        const chars = (cachedDetails.characters?.edges || []).map(edge => ({
+          id: edge.node.id,
+          name: edge.node.name.full,
+          character: edge.role,
+          profile_path: edge.node.image.large || edge.node.image.medium,
+        }));
+        setCharacters(chars);
+
+        // Extract reviews
+        const mangaReviews = (cachedDetails.reviews?.nodes || []).map(review => ({
+          id: review.id,
+          author: review.user.name,
+          author_details: {
+            avatar_path: review.user.avatar?.large || review.user.avatar?.medium,
+          },
+          content: review.summary,
+          rating: review.rating,
+          created_at: review.createdAt,
+        }));
+        setReviews(mangaReviews);
+        setLoadingDetails(false);
+        return;
+      }
+      
       const details = await AniListService.fetchMangaDetails(item.id);
       if (details) {
         setMangaDetails(details);
+        // Cache the details
+        await CacheService.cacheMangaDetails(item.id, details);
         // Extract characters
         const chars = (details.characters?.edges || []).map(edge => ({
           id: edge.node.id,
@@ -130,20 +201,186 @@ export default function MangaDetailsScreen({ route, navigation }) {
   const genres = mangaData.genres || [];
   const averageScore = mangaData.averageScore ? (mangaData.averageScore / 10).toFixed(1) : null;
 
-  const handleRead = () => {
-    // TODO: Navigate to manga reader
-    console.log('Read pressed:', item);
-  };
-
-  const handleBookmark = () => {
-    console.log('Bookmark pressed:', item);
-    // TODO: Add to bookmarks
-  };
-
-  const handleChapterPress = (chapter) => {
-    if (navigation && chapter) {
-      navigation.navigate('MangaReader', { chapter });
+  const handleRead = async () => {
+    if (!navigation || !item || allmangaChapters.length === 0) return;
+    
+    let chapterToRead = null;
+    let resumePage = null;
+    
+    // Check if there's progress on a chapter
+    if (latestChapterProgress) {
+      // Find the chapter with progress
+      chapterToRead = allmangaChapters.find(
+        ch => ch.number === latestChapterProgress.chapterNumber
+      );
+      if (chapterToRead) {
+        resumePage = latestChapterProgress.currentPage;
+      }
     }
+    
+    // If no progress or chapter not found, use first chapter
+    if (!chapterToRead && allmangaChapters.length > 0) {
+      chapterToRead = allmangaChapters[0];
+    }
+    
+    if (chapterToRead) {
+      navigation.navigate('MangaReader', {
+        chapter: chapterToRead,
+        manga: item,
+        resumePage,
+        allChapters: allmangaChapters,
+      });
+    }
+  };
+
+  const handleBookmark = async () => {
+    if (!item) return;
+    
+    // Use mangaData which has full details including coverImage and bannerImage
+    // If mangaDetails is not loaded yet, use item but ensure it has the structure
+    const mangaData = mangaDetails || item;
+    
+    // Ensure we have the necessary properties for manga
+    if (!mangaData.coverImage && !mangaData.bannerImage && item.coverImage) {
+      // If item has coverImage but mangaData doesn't, use item
+      Object.assign(mangaData, item);
+    }
+    
+    if (isBookmarked) {
+      // Remove bookmark
+      const success = await StorageService.removeBookmark(item.id, 'manga');
+      if (success) {
+        setIsBookmarked(false);
+      }
+    } else {
+      // Add to bookmarks - use mangaData for full details
+      console.log('Saving manga bookmark:', {
+        id: mangaData.id,
+        title: mangaData.title,
+        hasCoverImage: !!mangaData.coverImage,
+        hasBannerImage: !!mangaData.bannerImage,
+      });
+      const success = await StorageService.saveBookmark(mangaData);
+      console.log('Bookmark save result:', success);
+      if (success) {
+        setIsBookmarked(true);
+      } else {
+        console.log('Failed to save bookmark - might already exist');
+        // Re-check bookmark status
+        await checkBookmarkStatus();
+      }
+    }
+  };
+
+  const handleAddToCollection = () => {
+    if (!item) return;
+    // Use mangaData which has full details including coverImage and bannerImage
+    const mangaData = mangaDetails || item;
+    // Show collection picker to add to collection
+    setShowCollectionPicker(true);
+  };
+
+  const handleItemAddedToCollection = (collection) => {
+    // Update UI to show item is in collection
+    setIsInCollection(true);
+    console.log('Item added to collection:', collection.name);
+  };
+
+  const loadReadingProgress = async () => {
+    if (!item || !item.id) return;
+    
+    try {
+      const progress = await ReadProgressService.getLatestChapterProgress(item.id);
+      setLatestChapterProgress(progress);
+    } catch (error) {
+      console.error('Error loading reading progress:', error);
+    }
+  };
+
+  const loadDownloadedChapters = async () => {
+    if (!item || !item.id) return;
+    
+    try {
+      const chapters = await DownloadService.getDownloadedChapters(item.id);
+      const downloadedSet = new Set(chapters.map(ch => ch.chapterNumber));
+      setDownloadedChapters(downloadedSet);
+    } catch (error) {
+      console.error('Error loading downloaded chapters:', error);
+    }
+  };
+
+  const handleDownloadChapter = async (chapter) => {
+    if (!item || !chapter) return;
+    
+    const isDownloaded = downloadedChapters.has(chapter.number);
+    if (isDownloaded) {
+      Alert.alert(
+        'Chapter Already Downloaded',
+        'This chapter is already downloaded for offline reading.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    
+    Alert.alert(
+      'Download Chapter',
+      `Download Chapter ${chapter.number} for offline reading? This will also download the manga poster and information.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Download',
+          onPress: async () => {
+            try {
+              setDownloadingChapters(prev => new Set(prev).add(chapter.number));
+              
+              await DownloadService.downloadChapter(
+                item,
+                chapter,
+                (progress) => {
+                  console.log(`Download progress: ${(progress * 100).toFixed(0)}%`);
+                }
+              );
+              
+              // Reload downloaded chapters
+              await loadDownloadedChapters();
+              
+              Alert.alert('Success', 'Chapter downloaded successfully!');
+            } catch (error) {
+              console.error('Error downloading chapter:', error);
+              Alert.alert('Error', 'Failed to download chapter. Please try again.');
+            } finally {
+              setDownloadingChapters(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(chapter.number);
+                return newSet;
+              });
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleChapterPress = async (chapter) => {
+    if (!navigation || !chapter || !item) return;
+    
+    // Check for progress for this specific chapter
+    let resumePage = null;
+    try {
+      const progress = await ReadProgressService.getProgress(item.id, chapter.number);
+      if (progress) {
+        resumePage = progress.currentPage;
+      }
+    } catch (error) {
+      console.error('Error loading chapter progress:', error);
+    }
+    
+    navigation.navigate('MangaReader', { 
+      chapter,
+      manga: item,
+      resumePage,
+      allChapters: allmangaChapters,
+    });
   };
 
   const headerTranslateY = scrollY.interpolate({
@@ -211,13 +448,13 @@ export default function MangaDetailsScreen({ route, navigation }) {
             ]}
           >
             {bannerUrl ? (
-              <Image
+              <CachedImage
                 source={{ uri: bannerUrl }}
                 style={styles.backdrop}
                 resizeMode="cover"
               />
             ) : coverUrl ? (
-              <Image
+              <CachedImage
                 source={{ uri: coverUrl }}
                 style={styles.backdrop}
                 resizeMode="cover"
@@ -238,7 +475,7 @@ export default function MangaDetailsScreen({ route, navigation }) {
           <View style={styles.infoSection}>
             {/* Manga Poster */}
             <View style={styles.posterContainer}>
-              <Image
+              <CachedImage
                 source={{ uri: coverUrl }}
                 style={styles.posterImage}
                 resizeMode="cover"
@@ -254,7 +491,7 @@ export default function MangaDetailsScreen({ route, navigation }) {
             <View style={styles.infoRow}>
               {formattedStartDate && (
                 <View style={styles.dateRow}>
-                  <Ionicons name="calendar" size={14} color="#FF3B30" style={{ marginRight: 4 }} />
+                  <Ionicons name="calendar" size={14} color="#fff" style={{ marginRight: 4 }} />
                   <Text style={styles.dateText}>{formattedStartDate}</Text>
                   {formattedEndDate && formattedEndDate !== formattedStartDate && (
                     <Text style={styles.dateText}> - {formattedEndDate}</Text>
@@ -263,7 +500,7 @@ export default function MangaDetailsScreen({ route, navigation }) {
               )}
               {averageScore && (
                 <View style={styles.ratingRow}>
-                  <Ionicons name="star" size={14} color="#FF3B30" style={{ marginRight: 4 }} />
+                  <Ionicons name="star" size={14} color="#fff" style={{ marginRight: 4 }} />
                   <Text style={styles.ratingText}>{averageScore}</Text>
                 </View>
               )}
@@ -307,16 +544,44 @@ export default function MangaDetailsScreen({ route, navigation }) {
               onPress={handleRead}
               activeOpacity={0.8}
             >
-              <Ionicons name="book" size={20} color="#000" />
-              <Text style={styles.readButtonText}>Read</Text>
+              <Ionicons name={latestChapterProgress ? "book" : "book-outline"} size={20} color="#000" />
+              <Text style={styles.readButtonText}>
+                {latestChapterProgress 
+                  ? `Continue Reading Ch. ${latestChapterProgress.chapterNumber}`
+                  : 'Read'}
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.bookmarkButton, { marginLeft: 12 }]}
+              style={[
+                styles.bookmarkButton,
+                { marginLeft: 12 },
+                isBookmarked && styles.bookmarkButtonActive,
+              ]}
               onPress={handleBookmark}
               activeOpacity={0.8}
             >
-              <Ionicons name="add" size={24} color="#fff" />
+              <Ionicons
+                name={isBookmarked ? 'bookmark' : 'bookmark-outline'}
+                size={24}
+                color={isBookmarked ? '#000' : '#fff'}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.collectionButton,
+                { marginLeft: 12 },
+                isInCollection && styles.collectionButtonActive,
+              ]}
+              onPress={handleAddToCollection}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={isInCollection ? 'checkmark' : 'add'}
+                size={24}
+                color={isInCollection ? '#000' : '#fff'}
+              />
             </TouchableOpacity>
           </View>
 
@@ -325,7 +590,7 @@ export default function MangaDetailsScreen({ route, navigation }) {
             <Text style={styles.charactersTitle}>Characters</Text>
             {loadingDetails ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="small" color="#FF3B30" />
+                <ActivityIndicator size="small" color="#fff" />
               </View>
             ) : characters.length > 0 ? (
               <ScrollView
@@ -366,7 +631,7 @@ export default function MangaDetailsScreen({ route, navigation }) {
                   <Ionicons
                     name={chapterOrderAscending ? "arrow-down" : "arrow-up"}
                     size={20}
-                    color="#FF3B30"
+                    color="#fff"
                   />
                 </TouchableOpacity>
               )}
@@ -374,7 +639,7 @@ export default function MangaDetailsScreen({ route, navigation }) {
 
             {loadingChapters ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#FF3B30" />
+                <ActivityIndicator size="large" color="#fff" />
                 <Text style={styles.loadingText}>Loading chapters...</Text>
               </View>
             ) : finalChapters.length > 0 ? (
@@ -384,6 +649,9 @@ export default function MangaDetailsScreen({ route, navigation }) {
                     key={chapter.id}
                     chapter={chapter}
                     onPress={handleChapterPress}
+                    onDownload={handleDownloadChapter}
+                    isDownloaded={downloadedChapters.has(chapter.number)}
+                    isDownloading={downloadingChapters.has(chapter.number)}
                   />
                 ))}
               </View>
@@ -421,6 +689,14 @@ export default function MangaDetailsScreen({ route, navigation }) {
           <Ionicons name="chevron-back" size={24} color="#fff" />
         </TouchableOpacity>
       </View>
+
+      {/* Collection Picker Modal */}
+      <CollectionPickerModal
+        visible={showCollectionPicker}
+        onClose={() => setShowCollectionPicker(false)}
+        item={mangaDetails || item}
+        onItemAdded={handleItemAddedToCollection}
+      />
     </View>
   );
 }
@@ -525,12 +801,12 @@ const styles = StyleSheet.create({
   dateText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#FF3B30',
+    color: '#fff',
   },
   ratingText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#FF3B30',
+    color: '#fff',
   },
   statusRow: {
     flexDirection: 'row',
@@ -591,7 +867,7 @@ const styles = StyleSheet.create({
   },
   genreText: {
     fontSize: 12,
-    color: '#FF3B30',
+    color: '#fff',
     fontWeight: '600',
   },
   contentSection: {
@@ -631,6 +907,24 @@ const styles = StyleSheet.create({
     borderColor: '#fff',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  bookmarkButtonActive: {
+    backgroundColor: '#fff',
+    borderColor: '#fff',
+  },
+  collectionButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    borderWidth: 2,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  collectionButtonActive: {
+    backgroundColor: '#fff',
+    borderColor: '#fff',
   },
   navOverlay: {
     position: 'absolute',
@@ -680,7 +974,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         borderWidth: 1,
-        borderColor: '#FF3B30',
+        borderColor: '#fff',
       },
   chaptersList: {
     marginTop: 8,

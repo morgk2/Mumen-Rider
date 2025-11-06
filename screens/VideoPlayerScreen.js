@@ -12,26 +12,39 @@ import {
   PanResponder,
   ScrollView,
   Modal,
+  LayoutAnimation,
+  UIManager,
+  TextInput,
+  Alert,
 } from 'react-native';
-import { Video, ResizeMode } from 'expo-av';
+import { Video, ResizeMode, Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VixsrcService } from '../services/VixsrcService';
+import { OpenSubtitlesService, LANGUAGE_CODES } from '../services/OpenSubtitlesService';
+import { WatchProgressService } from '../services/WatchProgressService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const SUBTITLE_SETTINGS_KEY = '@subtitle_settings';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function VideoPlayerScreen({ route, navigation }) {
-  const { item, episode, season, episodeNumber } = route.params || {};
+  const { item, episode, season, episodeNumber, resumePosition } = route.params || {};
   const insets = useSafeAreaInsets();
   const videoRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [streamUrl, setStreamUrl] = useState(null);
   const [isPlaying, setIsPlaying] = useState(true);
-  const [position, setPosition] = useState(0);
+  const [position, setPosition] = useState(resumePosition || 0);
   const [duration, setDuration] = useState(0);
+  const progressSaveIntervalRef = useRef(null);
+  const hasSeekedToResumePosition = useRef(false);
+  const positionRef = useRef(resumePosition || 0);
+  const durationRef = useRef(0);
   const [showControls, setShowControls] = useState(true);
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [isControlsLocked, setIsControlsLocked] = useState(false);
@@ -42,8 +55,54 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [subtitleTracks, setSubtitleTracks] = useState([]);
   const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState(null);
   const [isSubtitleExpanded, setIsSubtitleExpanded] = useState(false);
+  const [isMenuExpanded, setIsMenuExpanded] = useState(false);
+  const [isSubtitleSearchMode, setIsSubtitleSearchMode] = useState(false);
   const [currentSubtitleText, setCurrentSubtitleText] = useState('');
+  const [subtitleSearchQuery, setSubtitleSearchQuery] = useState('');
+  const [subtitleSearchLanguage, setSubtitleSearchLanguage] = useState('eng');
+  const [subtitleSearchResults, setSubtitleSearchResults] = useState([]);
+  const [isSearchingSubtitles, setIsSearchingSubtitles] = useState(false);
   const subtitleCuesRef = useRef([]);
+  
+  // Subtitle customization states (loaded from settings)
+  const [subtitleColor, setSubtitleColor] = useState('#ffffff');
+  const [subtitleSize, setSubtitleSize] = useState(18);
+  const [subtitlePosition, setSubtitlePosition] = useState(80); // 0 = top, 50 = center, 100 = bottom
+  const [subtitleFont, setSubtitleFont] = useState('System');
+  const [subtitleShadow, setSubtitleShadow] = useState(false);
+  const [subtitleBackground, setSubtitleBackground] = useState(true);
+  const [subtitleOutline, setSubtitleOutline] = useState(false);
+
+  // Load subtitle settings on mount
+  useEffect(() => {
+    loadSubtitleSettings();
+  }, []);
+
+  const loadSubtitleSettings = async () => {
+    try {
+      const settingsJson = await AsyncStorage.getItem(SUBTITLE_SETTINGS_KEY);
+      if (settingsJson) {
+        const settings = JSON.parse(settingsJson);
+        setSubtitleColor(settings.color || '#ffffff');
+        setSubtitleSize(settings.size || 18);
+        // Convert old string position to numeric if needed
+        if (typeof settings.position === 'string') {
+          if (settings.position === 'top') setSubtitlePosition(0);
+          else if (settings.position === 'center') setSubtitlePosition(50);
+          else setSubtitlePosition(80);
+        } else {
+          setSubtitlePosition(settings.position !== undefined ? settings.position : 80);
+        }
+        setSubtitleFont(settings.font || 'System');
+        setSubtitleShadow(settings.shadow || false);
+        setSubtitleBackground(settings.background !== undefined ? settings.background : true);
+        setSubtitleOutline(settings.outline || false);
+      }
+    } catch (error) {
+      console.error('Error loading subtitle settings:', error);
+    }
+  };
+
   const controlsTimeoutRef = useRef(null);
   const dimOverlayOpacity = useRef(new Animated.Value(0)).current;
   const speedButtonWidth = useRef(new Animated.Value(42)).current;
@@ -52,11 +111,29 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [isSliderActive, setIsSliderActive] = useState(false);
   const [sliderWidth, setSliderWidth] = useState(0);
   const sliderProgress = useRef(new Animated.Value(0)).current;
-  const sliderHeight = useRef(new Animated.Value(13)).current;
+  const sliderHeight = useRef(new Animated.Value(24)).current;
   const [centerControlsWidth, setCenterControlsWidth] = useState(0);
   const [centerControlsHeight, setCenterControlsHeight] = useState(0);
   const [volumeBarWidth, setVolumeBarWidth] = useState(0);
   const volumeBarWidthRef = useRef(0);
+  
+  // Animation values for controls - initialized based on showControls initial state
+  const topBarOpacity = useRef(new Animated.Value(showControls ? 1 : 0)).current;
+  const topBarTranslateY = useRef(new Animated.Value(showControls ? 0 : -50)).current;
+  const centerControlsOpacity = useRef(new Animated.Value(showControls ? 1 : 0)).current;
+  const centerControlsScale = useRef(new Animated.Value(showControls ? 1 : 0.9)).current;
+  const bottomControlsOpacity = useRef(new Animated.Value(showControls ? 1 : 0)).current;
+  const bottomControlsTranslateY = useRef(new Animated.Value(showControls ? 0 : 50)).current;
+  
+  // Animation values for subtitle modal
+  const subtitleModalOpacity = useRef(new Animated.Value(0)).current;
+  const subtitleModalTranslateY = useRef(new Animated.Value(20)).current;
+  const subtitleButtonWidth = useRef(new Animated.Value(42)).current;
+  
+  // Animation values for menu modal
+  const menuModalOpacity = useRef(new Animated.Value(0)).current;
+  const menuModalTranslateY = useRef(new Animated.Value(20)).current;
+  const menuModalDownwardTranslate = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const lockOrientation = async () => {
@@ -67,11 +144,31 @@ export default function VideoPlayerScreen({ route, navigation }) {
       }
     };
 
+    const setupAudio = async () => {
+      try {
+        // Configure audio mode for video playback
+        await Audio.setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false,
+        });
+      } catch (error) {
+        console.error('Error setting audio mode:', error);
+      }
+    };
+
     lockOrientation();
+    setupAudio();
     fetchStreamUrl();
 
     // Auto-hide controls after 3 seconds
     startControlsTimer();
+
+    // Save progress periodically (every 10 seconds)
+    progressSaveIntervalRef.current = setInterval(() => {
+      saveWatchProgress();
+    }, 10000);
 
     return () => {
       ScreenOrientation.unlockAsync().catch(err => {
@@ -80,6 +177,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
       if (controlsTimeoutRef.current) {
         clearTimeout(controlsTimeoutRef.current);
       }
+      if (progressSaveIntervalRef.current) {
+        clearInterval(progressSaveIntervalRef.current);
+      }
+      // Save progress on exit
+      saveWatchProgress();
     };
   }, []);
 
@@ -99,7 +201,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   // Animate slider height when active
   useEffect(() => {
     Animated.spring(sliderHeight, {
-      toValue: isSliderActive ? 18 : 13,
+      toValue: isSliderActive ? 30 : 24,
       useNativeDriver: false,
       tension: 50,
       friction: 7,
@@ -126,14 +228,234 @@ export default function VideoPlayerScreen({ route, navigation }) {
       if (isSubtitleExpanded) {
         setIsSubtitleExpanded(false);
       }
+      if (isMenuExpanded) {
+        setIsMenuExpanded(false);
+      }
+      if (isSubtitleSearchMode) {
+        setIsSubtitleSearchMode(false);
+      }
     }
-  }, [showControls, isSpeedExpanded, isSubtitleExpanded]);
+  }, [showControls, isSpeedExpanded, isSubtitleExpanded, isMenuExpanded, isSubtitleSearchMode]);
+
+  // Disable controls auto-hide when any modal is active
+  useEffect(() => {
+    const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode;
+    
+    if (hasActiveModal) {
+      // Clear any existing timer when modal opens
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+        controlsTimeoutRef.current = null;
+      }
+      // Ensure controls stay visible
+      if (!showControls && !isControlsLocked) {
+        setShowControls(true);
+      }
+    } else {
+      // Restart timer when all modals are closed
+      if (showControls && !isControlsLocked) {
+        startControlsTimer();
+      }
+    }
+  }, [isSubtitleExpanded, isMenuExpanded, isSubtitleSearchMode, showControls, isControlsLocked]);
+
+  // Animate subtitle modal appearance/disappearance
+  useEffect(() => {
+    const duration = 200; // Fast but smooth
+    
+    if (isSubtitleExpanded) {
+      // Slide up and fade in
+      Animated.parallel([
+        Animated.timing(subtitleModalOpacity, {
+          toValue: 1,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.timing(subtitleModalTranslateY, {
+          toValue: 0,
+          duration,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      // Slide down and fade out
+      Animated.parallel([
+        Animated.timing(subtitleModalOpacity, {
+          toValue: 0,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.timing(subtitleModalTranslateY, {
+          toValue: 20,
+          duration,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [isSubtitleExpanded]);
+
+  // Animate menu modal appearance/disappearance and size changes
+  useEffect(() => {
+    const duration = 200; // Fast but smooth
+    
+    if (isMenuExpanded) {
+      // Slide up and fade in
+      Animated.parallel([
+        Animated.timing(menuModalOpacity, {
+          toValue: 1,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.timing(menuModalTranslateY, {
+          toValue: 0,
+          duration,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      // Slide down and fade out
+      Animated.parallel([
+        Animated.timing(menuModalOpacity, {
+          toValue: 0,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.timing(menuModalTranslateY, {
+          toValue: 20,
+          duration,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [isMenuExpanded]);
+
+  // Animate menu modal size and position when switching to subtitle search mode
+  useEffect(() => {
+    // Enable LayoutAnimation on Android
+    if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+    
+    LayoutAnimation.configureNext({
+      duration: 250,
+      create: {
+        type: LayoutAnimation.Types.easeInEaseOut,
+        property: LayoutAnimation.Properties.opacity,
+      },
+      update: {
+        type: LayoutAnimation.Types.easeInEaseOut,
+      },
+    });
+    
+    // Animate downward movement - move down when expanding (less downward movement)
+    Animated.spring(menuModalDownwardTranslate, {
+      toValue: isSubtitleSearchMode ? 150 : 0,
+      useNativeDriver: true,
+      tension: 50,
+      friction: 7,
+    }).start();
+  }, [isSubtitleSearchMode]);
+
+  // Animate controls appearance/disappearance
+  useEffect(() => {
+    const duration = 200; // Fast but smooth
+    
+    if (showControls && !isControlsLocked) {
+      // Slide up and fade in
+      Animated.parallel([
+        // Top bar - slide down from top
+        Animated.parallel([
+          Animated.timing(topBarOpacity, {
+            toValue: 1,
+            duration,
+            useNativeDriver: true,
+          }),
+          Animated.timing(topBarTranslateY, {
+            toValue: 0,
+            duration,
+            useNativeDriver: true,
+          }),
+        ]),
+        // Center controls - fade in and scale
+        Animated.parallel([
+          Animated.timing(centerControlsOpacity, {
+            toValue: 1,
+            duration,
+            useNativeDriver: true,
+          }),
+          Animated.timing(centerControlsScale, {
+            toValue: 1,
+            duration,
+            useNativeDriver: true,
+          }),
+        ]),
+        // Bottom controls - slide up from bottom
+        Animated.parallel([
+          Animated.timing(bottomControlsOpacity, {
+            toValue: 1,
+            duration,
+            useNativeDriver: true,
+          }),
+          Animated.timing(bottomControlsTranslateY, {
+            toValue: 0,
+            duration,
+            useNativeDriver: true,
+          }),
+        ]),
+      ]).start();
+    } else {
+      // Slide down and fade out
+      Animated.parallel([
+        // Top bar - slide up and fade out
+        Animated.parallel([
+          Animated.timing(topBarOpacity, {
+            toValue: 0,
+            duration,
+            useNativeDriver: true,
+          }),
+          Animated.timing(topBarTranslateY, {
+            toValue: -50,
+            duration,
+            useNativeDriver: true,
+          }),
+        ]),
+        // Center controls - fade out and scale down
+        Animated.parallel([
+          Animated.timing(centerControlsOpacity, {
+            toValue: 0,
+            duration,
+            useNativeDriver: true,
+          }),
+          Animated.timing(centerControlsScale, {
+            toValue: 0.9,
+            duration,
+            useNativeDriver: true,
+          }),
+        ]),
+        // Bottom controls - slide down and fade out
+        Animated.parallel([
+          Animated.timing(bottomControlsOpacity, {
+            toValue: 0,
+            duration,
+            useNativeDriver: true,
+          }),
+          Animated.timing(bottomControlsTranslateY, {
+            toValue: 50,
+            duration,
+            useNativeDriver: true,
+          }),
+        ]),
+      ]).start();
+    }
+  }, [showControls, isControlsLocked]);
 
   const startControlsTimer = () => {
     if (controlsTimeoutRef.current) {
       clearTimeout(controlsTimeoutRef.current);
     }
-    if (!isControlsLocked && showControls) {
+    // Don't auto-hide controls if any modal is active
+    const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode;
+    if (!isControlsLocked && showControls && !hasActiveModal) {
       controlsTimeoutRef.current = setTimeout(() => {
         setShowControls(false);
       }, 3000);
@@ -143,8 +465,46 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const resetControlsTimer = () => {
     if (!isControlsLocked) {
       setShowControls(true);
+      // Don't start timer if any modal is active
+      const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode;
+      if (!hasActiveModal) {
       startControlsTimer();
+      }
     }
+  };
+
+  // Save watch progress
+  const saveWatchProgress = async () => {
+    if (!item || !item.id || positionRef.current === 0 || durationRef.current === 0) return;
+    
+    try {
+      const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+      if (episode && season !== null && episodeNumber !== null) {
+        await WatchProgressService.saveProgress(
+          item.id,
+          mediaType,
+          positionRef.current,
+          durationRef.current,
+          season,
+          episodeNumber
+        );
+      } else {
+        await WatchProgressService.saveProgress(
+          item.id,
+          mediaType,
+          positionRef.current,
+          durationRef.current
+        );
+      }
+    } catch (error) {
+      console.error('Error saving watch progress:', error);
+    }
+  };
+
+  // Handle back button - save progress before going back
+  const handleBack = async () => {
+    await saveWatchProgress();
+    navigation.goBack();
   };
 
   const fetchStreamUrl = async () => {
@@ -250,11 +610,35 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   const handlePlaybackStatus = async (status) => {
     if (status.isLoaded) {
-      setPosition(status.positionMillis || 0);
-      setDuration(status.durationMillis || 0);
+      const newPosition = status.positionMillis || 0;
+      const newDuration = status.durationMillis || 0;
+      
+      positionRef.current = newPosition;
+      durationRef.current = newDuration;
+      setPosition(newPosition);
+      setDuration(newDuration);
       setIsPlaying(status.isPlaying || false);
+
+      // Seek to resume position when video first loads
+      if (resumePosition && resumePosition > 0 && !hasSeekedToResumePosition.current && newDuration > 0) {
+        hasSeekedToResumePosition.current = true;
+        if (videoRef.current) {
+          await videoRef.current.setPositionAsync(resumePosition);
+          setPosition(resumePosition);
+          positionRef.current = resumePosition;
+        }
+      }
     }
     if (status.isLoaded && status.didJustFinish) {
+      // Remove progress when video finishes
+      if (item && item.id) {
+        const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+        if (episode && season !== null && episodeNumber !== null) {
+          await WatchProgressService.removeProgress(item.id, mediaType, season, episodeNumber);
+        } else {
+          await WatchProgressService.removeProgress(item.id, mediaType);
+        }
+      }
       navigation.goBack();
     }
   };
@@ -265,6 +649,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
       if (isPlaying) {
         await videoRef.current.pauseAsync();
       } else {
+        // Ensure volume and mute state are set before playing
+        await videoRef.current.setVolumeAsync(volume);
+        await videoRef.current.setIsMutedAsync(isMuted);
         await videoRef.current.playAsync();
       }
     }
@@ -352,8 +739,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
     resetControlsTimer();
     const newExpanded = !isSpeedExpanded;
     setIsSpeedExpanded(newExpanded);
-    // Collapse subtitle if expanding speed
-    if (newExpanded && isSubtitleExpanded) {
+    // Collapse subtitle and menu if expanding speed
+    if (newExpanded) {
+      if (isSubtitleExpanded) {
       setIsSubtitleExpanded(false);
       Animated.spring(subtitleButtonWidth, {
         toValue: 42,
@@ -361,6 +749,10 @@ export default function VideoPlayerScreen({ route, navigation }) {
         tension: 50,
         friction: 7,
       }).start();
+      }
+      if (isMenuExpanded) {
+        setIsMenuExpanded(false);
+      }
     }
     
     // Animate width expansion - calculated to fit all 5 speed options
@@ -376,17 +768,177 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const toggleSubtitleMenu = () => {
     resetControlsTimer();
     setIsSubtitleExpanded(!isSubtitleExpanded);
+    if (isMenuExpanded) {
+      setIsMenuExpanded(false);
+    }
+  };
+
+  const toggleMenu = () => {
+    resetControlsTimer();
+    const newExpanded = !isMenuExpanded;
+    setIsMenuExpanded(newExpanded);
+    if (isSubtitleExpanded) {
+      setIsSubtitleExpanded(false);
+    }
+    // Reset subtitle search mode when closing menu
+    if (!newExpanded && isSubtitleSearchMode) {
+      setIsSubtitleSearchMode(false);
+    }
+  };
+
+  const handleLoadSRT = () => {
+    resetControlsTimer();
+    setIsMenuExpanded(false);
+    // TODO: Implement SRT file picker
+    console.log('Load SRT file');
+    // This would typically open a file picker
+    // For now, just log it
+  };
+
+  const handleLoadSubtitlesOnline = async () => {
+    resetControlsTimer();
+    setIsSubtitleSearchMode(true);
+    // Initialize search query with current movie/episode title
+    // For episodes, try just the show title first (episode names can be too specific)
+    const searchTitle = episode 
+      ? (item?.title || item?.name || '').trim()
+      : (item?.title || item?.name || '').trim();
+    setSubtitleSearchQuery(searchTitle);
+    // Auto-search if we have a title
+    if (searchTitle) {
+      // Wait for state to update, then search
+      setTimeout(() => {
+        // Use the current language state
+        const currentLanguage = subtitleSearchLanguage || 'eng';
+        setIsSearchingSubtitles(true);
+        setSubtitleSearchResults([]);
+
+        // Get IMDb ID if available
+        const imdbId = item?.imdb_id || item?.external_ids?.imdb_id || null;
+        console.log('Using IMDb ID:', imdbId);
+        
+        OpenSubtitlesService.searchSubtitles(searchTitle.trim(), currentLanguage, imdbId)
+          .then((results) => {
+            console.log('Auto-search results:', results.length, results);
+            setSubtitleSearchResults(results);
+          })
+          .catch((error) => {
+            console.error('Error in auto-search:', error);
+            setSubtitleSearchResults([]);
+          })
+          .finally(() => {
+            setIsSearchingSubtitles(false);
+          });
+      }, 300);
+    }
+  };
+
+  const closeSubtitleSearch = () => {
+    setIsSubtitleSearchMode(false);
+    setIsMenuExpanded(false);
+    setSubtitleSearchResults([]);
+    setSubtitleSearchQuery('');
+  };
+
+  const handleBackFromSearch = () => {
+    setIsSubtitleSearchMode(false);
+    setSubtitleSearchResults([]);
+    setSubtitleSearchQuery('');
+  };
+
+  const searchSubtitles = async () => {
+    if (!subtitleSearchQuery.trim()) {
+      return;
+    }
+
+    setIsSearchingSubtitles(true);
+    setSubtitleSearchResults([]);
+
+    try {
+      console.log('Searching subtitles:', subtitleSearchQuery.trim(), 'Language:', subtitleSearchLanguage);
+      
+      // Get IMDb ID if available
+      const imdbId = item?.imdb_id || item?.external_ids?.imdb_id || null;
+      console.log('Using IMDb ID:', imdbId);
+      
+      const results = await OpenSubtitlesService.searchSubtitles(
+        subtitleSearchQuery.trim(),
+        subtitleSearchLanguage,
+        imdbId
+      );
+      console.log('Search results received:', results.length, results);
+      setSubtitleSearchResults(results);
+    } catch (error) {
+      console.error('Error searching subtitles:', error);
+      setSubtitleSearchResults([]);
+    } finally {
+      setIsSearchingSubtitles(false);
+    }
+  };
+
+  const handleSelectOnlineSubtitle = async (subtitle) => {
+    try {
+      setIsSearchingSubtitles(true);
+      const fileContent = await OpenSubtitlesService.downloadSubtitle(subtitle.fileId);
+      
+      if (fileContent) {
+        // Clear current subtitle text immediately
+        setCurrentSubtitleText('');
+        
+        // Parse the subtitle file
+        const cues = parseSRT(fileContent);
+        subtitleCuesRef.current = cues;
+        console.log('Loaded', cues.length, 'subtitle cues from online source');
+        
+        // Create a track object for the selected subtitle
+        const newTrack = {
+          id: subtitle.id,
+          name: `${subtitle.languageName || subtitle.language} - ${subtitle.release || 'Online'}`,
+          language: subtitle.language,
+          url: null, // No URL, content is already loaded
+          content: fileContent, // Store the content
+        };
+        
+        // Set the new track as selected (this replaces the previous one)
+        setSelectedSubtitleTrack(newTrack);
+        
+        // Close the modals
+        setIsSubtitleSearchMode(false);
+        setIsMenuExpanded(false);
+        setSubtitleSearchResults([]);
+        
+        // Reset controls timer to show the new subtitle is active
+        resetControlsTimer();
+      }
+    } catch (error) {
+      console.error('Error loading online subtitle:', error);
+      // Show error feedback to user
+      Alert.alert('Error', 'Failed to load subtitle. Please try another one.');
+    } finally {
+      setIsSearchingSubtitles(false);
+    }
   };
 
   const selectSubtitleTrack = async (track) => {
     resetControlsTimer();
     setSelectedSubtitleTrack(track);
     
-    // Load subtitle file if track has URL
-    if (track.id === 'none' || !track.url) {
+    // Load subtitle file if track has URL or content
+    if (track.id === 'none') {
       subtitleCuesRef.current = [];
       setCurrentSubtitleText('');
-    } else {
+    } else if (track.content) {
+      // Online subtitle with content already loaded
+      try {
+        const cues = parseSRT(track.content);
+        subtitleCuesRef.current = cues;
+        console.log('Loaded subtitle cues from content:', cues.length);
+      } catch (error) {
+        console.error('Error parsing subtitle content:', error);
+        subtitleCuesRef.current = [];
+      }
+    } else if (track.url) {
+      // Subtitle with URL
       try {
         const cues = await loadSubtitleFile(track.url);
         subtitleCuesRef.current = cues;
@@ -395,6 +947,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
         console.error('Error loading subtitle track:', error);
         subtitleCuesRef.current = [];
       }
+    } else {
+      subtitleCuesRef.current = [];
+      setCurrentSubtitleText('');
     }
     
     // Close menu after selection
@@ -570,17 +1125,17 @@ export default function VideoPlayerScreen({ route, navigation }) {
       
       {loading ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#FF3B30" />
+          <ActivityIndicator size="large" color="#fff" />
           <Text style={styles.loadingText}>Loading video...</Text>
         </View>
       ) : error ? (
         <View style={styles.errorContainer}>
-          <Ionicons name="alert-circle" size={64} color="#FF3B30" />
+          <Ionicons name="alert-circle" size={64} color="#fff" />
           <Text style={styles.errorText}>{error}</Text>
           <TouchableOpacity style={styles.retryButton} onPress={fetchStreamUrl}>
             <Text style={styles.retryButtonText}>Retry</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.errorBackButton} onPress={() => navigation.goBack()}>
+          <TouchableOpacity style={styles.errorBackButton} onPress={handleBack}>
             <Text style={styles.errorBackButtonText}>Go Back</Text>
           </TouchableOpacity>
         </View>
@@ -597,6 +1152,17 @@ export default function VideoPlayerScreen({ route, navigation }) {
             volume={volume}
             isMuted={isMuted}
             onPlaybackStatusUpdate={handlePlaybackStatus}
+            onLoadStart={async () => {
+              // Ensure audio is enabled when video loads
+              if (videoRef.current) {
+                try {
+                  await videoRef.current.setVolumeAsync(volume);
+                  await videoRef.current.setIsMutedAsync(isMuted);
+                } catch (error) {
+                  console.error('Error setting audio on load:', error);
+                }
+              }
+            }}
             onError={(error) => {
               console.error('Video error:', error);
               setError('Video playback error');
@@ -617,15 +1183,26 @@ export default function VideoPlayerScreen({ route, navigation }) {
             style={styles.controlsOverlay}
             activeOpacity={1}
             onPress={toggleControls}
+            disabled={isMenuExpanded && isSubtitleSearchMode}
           >
-            {showControls && !isControlsLocked && (
+            {!isControlsLocked && (
               <>
                 {/* Top Bar */}
-                <View style={[styles.topBar, { paddingTop: insets.top }]}>
+                <Animated.View 
+                  style={[
+                    styles.topBar, 
+                    { 
+                      paddingTop: insets.top,
+                      opacity: topBarOpacity,
+                      transform: [{ translateY: topBarTranslateY }],
+                    }
+                  ]}
+                  pointerEvents={showControls ? 'auto' : 'none'}
+                >
                   <View style={styles.topLeft}>
                     <TouchableOpacity
                       style={styles.dismissButton}
-                      onPress={() => navigation.goBack()}
+                      onPress={handleBack}
                     >
                       <BlurView intensity={80} tint="dark" style={styles.blurButton}>
                         <Ionicons name="close" size={20} color="#fff" />
@@ -692,16 +1269,18 @@ export default function VideoPlayerScreen({ route, navigation }) {
                       </BlurView>
                     </TouchableOpacity>
                   </View>
-                </View>
+                </Animated.View>
 
                 {/* Center Controls */}
-                <View 
+                <Animated.View 
                   style={[
                     styles.centerControls,
                     {
+                      opacity: centerControlsOpacity,
                       transform: [
                         { translateX: centerControlsWidth > 0 ? -centerControlsWidth / 2 : -100 },
-                        { translateY: centerControlsHeight > 0 ? -centerControlsHeight / 2 : -40 }
+                        { translateY: centerControlsHeight > 0 ? -centerControlsHeight / 2 : -40 },
+                        { scale: centerControlsScale },
                       ]
                     }
                   ]}
@@ -710,6 +1289,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                     setCenterControlsWidth(width);
                     setCenterControlsHeight(height);
                   }}
+                  pointerEvents={showControls ? 'auto' : 'none'}
                 >
                   <TouchableOpacity
                     style={styles.seekButton}
@@ -743,10 +1323,19 @@ export default function VideoPlayerScreen({ route, navigation }) {
                       <Ionicons name="play-forward" size={30} color="#fff" />
                     </BlurView>
                   </TouchableOpacity>
-                </View>
+                </Animated.View>
 
                 {/* Bottom Controls */}
-                <View style={styles.bottomControls}>
+                <Animated.View 
+                  style={[
+                    styles.bottomControls,
+                    {
+                      opacity: bottomControlsOpacity,
+                      transform: [{ translateY: bottomControlsTranslateY }],
+                    }
+                  ]}
+                  pointerEvents={showControls ? 'auto' : 'none'}
+                >
                   {/* Skip 85s Button - Only for anime TV shows */}
                   {showSkip85 && (
                     <TouchableOpacity
@@ -814,13 +1403,21 @@ export default function VideoPlayerScreen({ route, navigation }) {
                           <Ionicons 
                             name={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "text" : "text-outline"} 
                             size={20} 
-                            color={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "#FF3B30" : "#fff"} 
+                            color={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "#fff" : "#fff"} 
                           />
                         </BlurView>
                       </TouchableOpacity>
                       
-                      {isSubtitleExpanded && (
-                        <View style={styles.subtitleMenuContainer}>
+                      <Animated.View 
+                        style={[
+                          styles.subtitleMenuContainer,
+                          {
+                            opacity: subtitleModalOpacity,
+                            transform: [{ translateY: subtitleModalTranslateY }],
+                          }
+                        ]}
+                        pointerEvents={isSubtitleExpanded ? 'auto' : 'none'}
+                      >
                           <BlurView intensity={100} tint="dark" style={styles.subtitleMenuBlur}>
                             <ScrollView 
                               style={styles.subtitleMenuScroll}
@@ -845,22 +1442,210 @@ export default function VideoPlayerScreen({ route, navigation }) {
                                     {track.name}
                                   </Text>
                                   {selectedSubtitleTrack?.id === track.id && (
-                                    <Ionicons name="checkmark" size={16} color="#FF3B30" style={styles.subtitleMenuCheck} />
+                                    <Ionicons name="checkmark" size={16} color="#fff" style={styles.subtitleMenuCheck} />
                                   )}
                                 </TouchableOpacity>
                               ))}
                             </ScrollView>
                           </BlurView>
-                        </View>
-                      )}
+                      </Animated.View>
                     </View>
 
                     {/* Menu Button */}
-                    <TouchableOpacity style={styles.controlButton}>
+                    <View style={styles.menuButtonWrapper}>
+                      <TouchableOpacity 
+                        style={styles.controlButton}
+                        onPress={toggleMenu}
+                        activeOpacity={0.7}
+                      >
                       <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
                         <Ionicons name="ellipsis-horizontal" size={20} color="#fff" />
                       </BlurView>
+                      </TouchableOpacity>
+                      
+                      <Animated.View 
+                        style={[
+                          styles.menuContainer,
+                          isSubtitleSearchMode && styles.menuContainerExpanded,
+                          isSubtitleSearchMode && styles.menuContainerExpandedPosition,
+                          {
+                            opacity: menuModalOpacity,
+                            transform: [
+                              { translateY: Animated.add(menuModalTranslateY, menuModalDownwardTranslate) },
+                            ],
+                          }
+                        ]}
+                        pointerEvents={isMenuExpanded ? 'auto' : 'none'}
+                        onStartShouldSetResponder={() => true}
+                        onMoveShouldSetResponder={() => true}
+                      >
+                        <BlurView 
+                          intensity={100} 
+                          tint="dark" 
+                          style={styles.menuBlur}
+                          onStartShouldSetResponder={() => true}
+                          onMoveShouldSetResponder={() => true}
+                        >
+                          {isSubtitleSearchMode ? (
+                            <>
+                              {/* Back Button */}
+                              <TouchableOpacity
+                                style={styles.menuItem}
+                                onPress={handleBackFromSearch}
+                              >
+                                <Ionicons name="arrow-back" size={18} color="#fff" style={styles.menuItemIcon} />
+                                <Text style={styles.menuItemText}>Back</Text>
+                              </TouchableOpacity>
+                              
+                              {/* Subtitle Search Content */}
+                              <View 
+                                style={styles.subtitleSearchContent}
+                                onStartShouldSetResponder={() => true}
+                                onMoveShouldSetResponder={() => true}
+                              >
+                                {/* Search Input */}
+                                <View style={styles.searchInputContainer}>
+                                  <TextInput
+                                    style={[styles.searchInput, { marginRight: 8 }]}
+                                    placeholder="Search for subtitles..."
+                                    placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                                    value={subtitleSearchQuery}
+                                    onChangeText={setSubtitleSearchQuery}
+                                    onSubmitEditing={searchSubtitles}
+                                    returnKeyType="search"
+                                  />
+                                  <TouchableOpacity
+                                    style={styles.searchButton}
+                                    onPress={searchSubtitles}
+                                    disabled={isSearchingSubtitles || !subtitleSearchQuery.trim()}
+                                  >
+                                    {isSearchingSubtitles ? (
+                                      <ActivityIndicator size="small" color="#fff" />
+                                    ) : (
+                                      <Ionicons name="search" size={20} color="#fff" />
+                                    )}
                     </TouchableOpacity>
+                                </View>
+
+                                {/* Language Selector */}
+                                <View style={styles.languageSelectorContainer}>
+                                  <Text style={styles.languageLabel}>Language:</Text>
+                                  <ScrollView 
+                                    horizontal 
+                                    showsHorizontalScrollIndicator={false}
+                                    style={styles.languageScrollView}
+                                  >
+                                    {Object.entries(LANGUAGE_CODES).map(([code, name]) => (
+                                      <TouchableOpacity
+                                        key={code}
+                                        style={[
+                                          styles.languageChip,
+                                          subtitleSearchLanguage === code && styles.languageChipActive,
+                                        ]}
+                                        onPress={() => {
+                                          setSubtitleSearchLanguage(code);
+                                          if (subtitleSearchQuery.trim()) {
+                                            searchSubtitles();
+                                          }
+                                        }}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.languageChipText,
+                                            subtitleSearchLanguage === code && styles.languageChipTextActive,
+                                          ]}
+                                        >
+                                          {name}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    ))}
+                                  </ScrollView>
+                                </View>
+
+                                {/* Search Results */}
+                                <ScrollView 
+                                  style={styles.searchResultsContainer}
+                                  nestedScrollEnabled={true}
+                                  showsVerticalScrollIndicator={false}
+                                  onStartShouldSetResponder={() => true}
+                                  onMoveShouldSetResponder={() => true}
+                                  onResponderTerminationRequest={() => false}
+                                >
+                                  {isSearchingSubtitles ? (
+                                    <View style={styles.emptyState}>
+                                      <ActivityIndicator size="large" color="rgba(255, 255, 255, 0.5)" />
+                                      <Text style={styles.emptyStateText}>Searching...</Text>
+                                    </View>
+                                  ) : subtitleSearchResults.length > 0 ? (
+                                    subtitleSearchResults.map((result) => (
+                                      <TouchableOpacity
+                                        key={result.id}
+                                        style={styles.subtitleResultItem}
+                                        onPress={() => handleSelectOnlineSubtitle(result)}
+                                      >
+                                        <View style={styles.subtitleResultHeader}>
+                                          <Text style={styles.subtitleResultName} numberOfLines={1}>
+                                            {result.name}
+                                          </Text>
+                                          <Text style={styles.subtitleResultLanguage}>
+                                            {result.languageName || result.language}
+                                          </Text>
+                                        </View>
+                                        {result.release && (
+                                          <Text style={styles.subtitleResultRelease} numberOfLines={1}>
+                                            {result.release}
+                                          </Text>
+                                        )}
+                                        <View style={styles.subtitleResultMeta}>
+                                          {result.downloads > 0 && (
+                                            <View style={styles.subtitleResultMetaItem}>
+                                              <Ionicons name="download" size={12} color="rgba(255, 255, 255, 0.6)" />
+                                              <Text style={styles.subtitleResultMetaText}>{result.downloads}</Text>
+                                            </View>
+                                          )}
+                                          {result.rating > 0 && (
+                                            <View style={styles.subtitleResultMetaItem}>
+                                              <Ionicons name="star" size={12} color="rgba(255, 255, 255, 0.6)" />
+                                              <Text style={styles.subtitleResultMetaText}>{result.rating.toFixed(1)}</Text>
+                                            </View>
+                                          )}
+                                        </View>
+                                      </TouchableOpacity>
+                                    ))
+                                  ) : subtitleSearchQuery.trim() && !isSearchingSubtitles ? (
+                                    <View style={styles.emptyState}>
+                                      <Ionicons name="document-text-outline" size={48} color="rgba(255, 255, 255, 0.3)" />
+                                      <Text style={styles.emptyStateText}>No subtitles found</Text>
+                                      <Text style={[styles.emptyStateText, { fontSize: 12, marginTop: 8, opacity: 0.7 }]}>
+                                        Try searching with a different title or language
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                </ScrollView>
+                              </View>
+                            </>
+                          ) : (
+                            <>
+                              <TouchableOpacity
+                                style={styles.menuItem}
+                                onPress={handleLoadSRT}
+                              >
+                                <Ionicons name="document-text" size={18} color="#fff" style={styles.menuItemIcon} />
+                                <Text style={styles.menuItemText}>Load SRT</Text>
+                              </TouchableOpacity>
+                              
+                              <TouchableOpacity
+                                style={styles.menuItem}
+                                onPress={handleLoadSubtitlesOnline}
+                              >
+                                <Ionicons name="cloud-download" size={18} color="#fff" style={styles.menuItemIcon} />
+                                <Text style={styles.menuItemText}>Load Subtitles Online</Text>
+                              </TouchableOpacity>
+                            </>
+                          )}
+                        </BlurView>
+                      </Animated.View>
+                    </View>
                   </View>
 
                   {/* Progress Slider - iOS Native Style */}
@@ -881,8 +1666,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
                           {
                             height: sliderHeight,
                             borderRadius: sliderHeight.interpolate({
-                              inputRange: [13, 18],
-                              outputRange: [6.5, 9],
+                              inputRange: [24, 30],
+                              outputRange: [12, 15],
                             }),
                           },
                         ]}
@@ -903,7 +1688,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                     </View>
                     <Text style={styles.timeText}>{formatTime(duration)}</Text>
                   </View>
-                </View>
+                </Animated.View>
               </>
             )}
 
@@ -921,8 +1706,29 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
             {/* Subtitle Overlay */}
             {currentSubtitleText && (
-              <View style={styles.subtitleOverlay}>
-                <Text style={styles.subtitleText}>{currentSubtitleText}</Text>
+              <View style={[
+                styles.subtitleOverlay,
+                {
+                  top: `${subtitlePosition}%`,
+                  marginTop: subtitlePosition === 50 ? -20 : 0,
+                }
+              ]}>
+                <Text style={[
+                  styles.subtitleText,
+                  {
+                    color: subtitleColor,
+                    fontSize: subtitleSize,
+                    fontFamily: subtitleFont === 'System' ? undefined : subtitleFont,
+                    textShadowColor: subtitleShadow ? 'rgba(0, 0, 0, 0.8)' : 'transparent',
+                    textShadowOffset: subtitleShadow ? { width: 2, height: 2 } : { width: 0, height: 0 },
+                    textShadowRadius: subtitleShadow ? 4 : 0,
+                    backgroundColor: subtitleBackground ? 'rgba(0, 0, 0, 0.7)' : 'transparent',
+                    textStrokeWidth: subtitleOutline ? 2 : 0,
+                    textStrokeColor: subtitleOutline ? '#000' : 'transparent',
+                    WebkitTextStrokeWidth: subtitleOutline ? 2 : 0,
+                    WebkitTextStrokeColor: subtitleOutline ? '#000' : 'transparent',
+                  }
+                ]}>{currentSubtitleText}</Text>
               </View>
             )}
           </TouchableOpacity>
@@ -967,14 +1773,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   retryButton: {
-    backgroundColor: '#FF3B30',
+    backgroundColor: '#fff',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 25,
     marginBottom: 12,
   },
   retryButtonText: {
-    color: '#fff',
+    color: '#000',
     fontSize: 16,
     fontWeight: '600',
   },
@@ -1167,12 +1973,12 @@ const styles = StyleSheet.create({
   },
   sliderTrack: {
     width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: 'rgba(255, 255, 255, 0.5)',
     overflow: 'hidden',
   },
   sliderFill: {
     height: '100%',
-    backgroundColor: '#fff',
+    backgroundColor: '#ffffff',
     borderRadius: 2,
   },
   controlButtonsRow: {
@@ -1275,6 +2081,55 @@ const styles = StyleSheet.create({
   subtitleMenuCheck: {
     marginLeft: 8,
   },
+  menuButtonWrapper: {
+    marginLeft: 12,
+    position: 'relative',
+  },
+  menuContainer: {
+    position: 'absolute',
+    bottom: 50,
+    right: 0,
+    width: 220,
+    minHeight: 120,
+    zIndex: 1000,
+    overflow: 'hidden',
+  },
+  menuContainerExpandedPosition: {
+    bottom: 180,
+  },
+  menuContainerExpanded: {
+    width: 400,
+    minHeight: 350,
+    maxHeight: SCREEN_HEIGHT * 0.55,
+  },
+  menuBlur: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    paddingVertical: 4,
+    width: '100%',
+    height: '100%',
+    flex: 1,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    minWidth: 200,
+  },
+  menuItemIcon: {
+    marginRight: 12,
+  },
+  menuItemText: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  subtitleSearchContent: {
+    flex: 1,
+    paddingTop: 8,
+    // Empty for now
+  },
   controlButton: {
     width: 42,
     height: 42,
@@ -1311,7 +2166,6 @@ const styles = StyleSheet.create({
   },
   subtitleOverlay: {
     position: 'absolute',
-    bottom: 120,
     left: 0,
     right: 0,
     alignItems: 'center',
@@ -1319,15 +2173,292 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   subtitleText: {
-    color: '#fff',
-    fontSize: 18,
     fontWeight: '600',
     textAlign: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
     maxWidth: '90%',
     lineHeight: 24,
+  },
+  subtitleSearchContent: {
+    flex: 1,
+    paddingTop: 8,
+  },
+  searchInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  searchInput: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#fff',
+    fontSize: 14,
+  },
+  searchButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  languageSelectorContainer: {
+    marginBottom: 12,
+  },
+  languageLabel: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  languageScrollView: {
+    flexGrow: 0,
+  },
+  languageChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginRight: 8,
+  },
+  languageChipActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.3)',
+  },
+  languageChipText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  languageChipTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  searchResultsContainer: {
+    flex: 1,
+    maxHeight: 350,
+  },
+  subtitleResultItem: {
+    padding: 12,
+    marginBottom: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+  },
+  subtitleResultHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  subtitleResultName: {
+    flex: 1,
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginRight: 8,
+  },
+  subtitleResultLanguage: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  subtitleResultRelease: {
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 11,
+    marginBottom: 6,
+  },
+  subtitleResultMeta: {
+    flexDirection: 'row',
+  },
+  subtitleResultMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  subtitleResultMetaText: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 11,
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyStateText: {
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 14,
+    marginTop: 12,
+  },
+  subtitleCustomizeContent: {
+    flex: 1,
+    paddingTop: 8,
+    minHeight: 0,
+  },
+  customizeScrollView: {
+    flex: 1,
+    minHeight: 0,
+  },
+  customizeScrollContent: {
+    flexGrow: 1,
+    paddingBottom: 20,
+  },
+  customizeSection: {
+    marginBottom: 20,
+    paddingHorizontal: 4,
+  },
+  customizeLabel: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  colorPickerContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  colorOption: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  colorOptionActive: {
+    borderColor: '#fff',
+    borderWidth: 3,
+    transform: [{ scale: 1.1 }],
+  },
+  sliderContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  sliderValue: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 12,
+    width: 30,
+    textAlign: 'center',
+  },
+  sliderTrack: {
+    flex: 1,
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 2,
+    marginHorizontal: 8,
+    position: 'relative',
+  },
+  sliderFill: {
+    position: 'absolute',
+    height: '100%',
+    backgroundColor: 'rgba(255, 59, 48, 0.8)',
+    borderRadius: 2,
+  },
+  sliderThumb: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    top: -6,
+    marginLeft: -8,
+  },
+  sliderButtons: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  sliderButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  positionSelector: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  positionOption: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+  },
+  positionOptionActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.3)',
+  },
+  positionOptionText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  positionOptionTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  fontScrollView: {
+    flexGrow: 0,
+  },
+  fontOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginRight: 8,
+  },
+  fontOptionActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.3)',
+  },
+  fontOptionText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  fontOptionTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  toggleOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  toggleLabel: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  toggleSwitch: {
+    width: 44,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+  },
+  toggleSwitchActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.8)',
+  },
+  toggleThumb: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    alignSelf: 'flex-start',
+  },
+  toggleThumbActive: {
+    alignSelf: 'flex-end',
   },
 });

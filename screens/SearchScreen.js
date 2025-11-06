@@ -178,7 +178,7 @@ export default function SearchScreen({ navigation }) {
             <Text style={styles.sectionTitle}>Trending Movies</Text>
             {loading ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#FF3B30" />
+                <ActivityIndicator size="large" color="#fff" />
                 <Text style={styles.loadingText}>Loading trending movies...</Text>
               </View>
             ) : (
@@ -200,7 +200,7 @@ export default function SearchScreen({ navigation }) {
             </Text>
             {searching ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#FF3B30" />
+                <ActivityIndicator size="large" color="#fff" />
                 <Text style={styles.loadingText}>Searching...</Text>
               </View>
             ) : searchResults.length > 0 ? (
@@ -223,7 +223,7 @@ export default function SearchScreen({ navigation }) {
                 </View>
                 {loadingMore && (
                   <View style={styles.loadingMoreContainer}>
-                    <ActivityIndicator size="small" color="#FF3B30" />
+                    <ActivityIndicator size="small" color="#fff" />
                     <Text style={styles.loadingMoreText}>Loading more...</Text>
                   </View>
                 )}
