@@ -20,6 +20,7 @@ import { WatchProgressService } from '../services/WatchProgressService';
 import { openInExternalPlayer } from '../services/ExternalPlayerService';
 import { VixsrcService } from '../services/VixsrcService';
 import { N3tflixService } from '../services/N3tflixService';
+import { VideoDownloadService } from '../services/VideoDownloadService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { EpisodeItem } from '../components/EpisodeItem';
 import { CastMember } from '../components/CastMember';
@@ -74,6 +75,9 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const [latestEpisodeProgress, setLatestEpisodeProgress] = useState(null);
   const [trailer, setTrailer] = useState(null);
   const [loadingTrailer, setLoadingTrailer] = useState(false);
+  const [isDownloaded, setIsDownloaded] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -84,6 +88,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
       fetchTrailer();
       checkBookmarkStatus();
       loadWatchProgress();
+      checkDownloadStatus();
       const isTVShow = !item.title && (item.name || item.media_type === 'tv');
       if (isTVShow) {
         fetchTVDetails();
@@ -91,6 +96,26 @@ export default function MovieDetailsScreen({ route, navigation }) {
       }
     }
   }, [item]);
+  
+  // Reload download status when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      if (item) {
+        checkDownloadStatus();
+      }
+    }, [item])
+  );
+  
+  // Check download status periodically when downloading
+  useEffect(() => {
+    if (!isDownloading) return;
+    
+    const interval = setInterval(() => {
+      checkDownloadStatus();
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [isDownloading]);
   
   const checkBookmarkStatus = async () => {
     if (!item) return;
@@ -112,14 +137,6 @@ export default function MovieDetailsScreen({ route, navigation }) {
     }
   }, [selectedSeason]);
 
-  // Reload progress when screen comes into focus
-  useFocusEffect(
-    React.useCallback(() => {
-      if (item) {
-        loadWatchProgress();
-      }
-    }, [item])
-  );
 
   const fetchLogo = async () => {
     if (!item) return;
@@ -418,6 +435,96 @@ export default function MovieDetailsScreen({ route, navigation }) {
       }
     } catch (error) {
       console.error('Error loading watch progress:', error);
+    }
+  };
+  
+  const checkDownloadStatus = async () => {
+    if (!item || !item.id) return;
+    
+    const isTVShow = !item.title && (item.name || item.media_type === 'tv');
+    // Only check download status for movies
+    if (isTVShow) return;
+    
+    try {
+      const downloaded = await VideoDownloadService.isMovieDownloaded(item.id);
+      setIsDownloaded(downloaded);
+      
+      // Check if currently downloading
+      const activeDownloads = VideoDownloadService.getActiveDownloads();
+      const movieDownload = activeDownloads.find(
+        d => d.mediaId === item.id && d.mediaType === 'movie'
+      );
+      
+      if (movieDownload) {
+        setIsDownloading(true);
+        setDownloadProgress(movieDownload.progress || 0);
+      } else {
+        setIsDownloading(false);
+        setDownloadProgress(0);
+      }
+    } catch (error) {
+      console.error('Error checking download status:', error);
+    }
+  };
+  
+  const handleDownload = async () => {
+    if (!item || !item.id) return;
+    
+    const isTVShow = !item.title && (item.name || item.media_type === 'tv');
+    // Only allow downloads for movies
+    if (isTVShow) {
+      Alert.alert('Info', 'Episode downloads are available from the episode list.');
+      return;
+    }
+    
+    // Check if already downloaded
+    if (isDownloaded) {
+      Alert.alert(
+        'Already Downloaded',
+        'This movie is already downloaded. You can watch it offline.',
+        [
+          { text: 'OK' }
+        ]
+      );
+      return;
+    }
+    
+    // Check if already downloading
+    if (isDownloading) {
+      Alert.alert('Download in Progress', 'This movie is already being downloaded.');
+      return;
+    }
+    
+    try {
+      setIsDownloading(true);
+      setDownloadProgress(0);
+      
+      const result = await VideoDownloadService.downloadMovie(item, (progress) => {
+        setDownloadProgress(progress);
+      });
+      
+      if (result.success) {
+        if (result.alreadyDownloaded) {
+          Alert.alert('Already Downloaded', 'This movie is already downloaded.');
+        } else {
+          Alert.alert('Download Complete', 'Movie downloaded successfully! You can now watch it offline.');
+        }
+        setIsDownloaded(true);
+        setIsDownloading(false);
+        setDownloadProgress(0);
+      } else if (result.alreadyDownloading) {
+        Alert.alert('Download in Progress', 'This movie is already being downloaded.');
+        setIsDownloading(true);
+      }
+    } catch (error) {
+      console.error('Error downloading movie:', error);
+      Alert.alert(
+        'Download Failed',
+        error.message || 'Failed to download movie. Please try again.',
+        [{ text: 'OK' }]
+      );
+      setIsDownloading(false);
+      setDownloadProgress(0);
     }
   };
 
@@ -737,6 +844,36 @@ export default function MovieDetailsScreen({ route, navigation }) {
                 {playButtonInfo.text}
               </Text>
             </TouchableOpacity>
+
+            {/* Download Button - Only show for movies */}
+            {item.title || (item.media_type === 'movie') ? (
+              <TouchableOpacity
+                style={[
+                  styles.downloadButton,
+                  { marginLeft: 12 },
+                  isDownloaded && styles.downloadButtonActive,
+                  isDownloading && styles.downloadButtonDownloading,
+                ]}
+                onPress={handleDownload}
+                activeOpacity={0.8}
+                disabled={isDownloading}
+              >
+                {isDownloading ? (
+                  <View style={styles.downloadButtonContent}>
+                    <ActivityIndicator size="small" color="#fff" />
+                    <Text style={styles.downloadButtonText}>
+                      {Math.round(downloadProgress * 100)}%
+                    </Text>
+                  </View>
+                ) : (
+                  <Ionicons
+                    name={isDownloaded ? 'checkmark-circle' : 'download-outline'}
+                    size={24}
+                    color={isDownloaded ? '#000' : '#fff'}
+                  />
+                )}
+              </TouchableOpacity>
+            ) : null}
 
             <TouchableOpacity
               style={[
@@ -1152,6 +1289,34 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#000',
     marginLeft: 6,
+  },
+  downloadButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    borderWidth: 2,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  downloadButtonActive: {
+    backgroundColor: '#fff',
+    borderColor: '#fff',
+  },
+  downloadButtonDownloading: {
+    backgroundColor: 'rgba(0, 150, 255, 0.5)',
+    borderColor: '#0096ff',
+  },
+  downloadButtonContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  downloadButtonText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#fff',
+    marginTop: 2,
   },
   bookmarkButton: {
     width: 44,
