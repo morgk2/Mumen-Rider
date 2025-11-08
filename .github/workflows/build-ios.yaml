@@ -48,7 +48,7 @@ jobs:
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '15.4'
+          xcode-version: '16.4.0'
 
       - name: Get app info from app.json
         id: app-info
