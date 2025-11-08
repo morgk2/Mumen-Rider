@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Dimensions, Text, TouchableOpacity, Animated } from 'react-native';
+import { View, StyleSheet, Dimensions, Text, TouchableOpacity, Animated, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { TMDBService } from '../services/TMDBService';
 import { CachedImage } from './CachedImage';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const FEATURED_HEIGHT = SCREEN_HEIGHT * 0.6;
+const IS_LARGE_SCREEN = SCREEN_WIDTH >= 768;
+const IS_WEB = Platform.OS === 'web';
+const FEATURED_HEIGHT = IS_LARGE_SCREEN && IS_WEB ? Math.min(SCREEN_HEIGHT * 0.75, 900) : SCREEN_HEIGHT * 0.6;
 
 export const FeaturedContent = ({ item, navigation, scrollY }) => {
   const [logoUrl, setLogoUrl] = useState(null);
@@ -187,60 +189,63 @@ const styles = StyleSheet.create({
   },
   content: {
     position: 'absolute',
-    bottom: 60,
-    left: 20,
-    right: 20,
-    alignItems: 'center',
+    bottom: IS_LARGE_SCREEN ? 80 : 60,
+    left: IS_LARGE_SCREEN ? 60 : 20,
+    right: IS_LARGE_SCREEN ? 60 : 20,
+    alignItems: 'flex-start',
     zIndex: 2,
+    maxWidth: IS_LARGE_SCREEN ? 800 : '100%',
   },
   titleContainer: {
-    alignItems: 'center',
+    alignItems: 'flex-start',
     width: '100%',
-    marginBottom: 4,
+    marginBottom: IS_LARGE_SCREEN ? 20 : 4,
   },
   logo: {
-    width: '70%',
-    height: 120,
-    maxWidth: 400,
-    alignSelf: 'center',
+    width: IS_LARGE_SCREEN ? '60%' : '70%',
+    height: IS_LARGE_SCREEN ? 180 : 120,
+    maxWidth: IS_LARGE_SCREEN ? 600 : 400,
+    alignSelf: 'flex-start',
   },
   fallbackTitle: {
-    fontSize: 48,
+    fontSize: IS_LARGE_SCREEN ? 72 : 48,
     fontWeight: 'bold',
     color: '#fff',
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 10,
-    textAlign: 'center',
+    textAlign: 'left',
   },
   buttonContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
+    gap: 12,
   },
   watchNowButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 25,
-    minWidth: 140,
+    paddingHorizontal: IS_LARGE_SCREEN ? 32 : 24,
+    paddingVertical: IS_LARGE_SCREEN ? 16 : 12,
+    borderRadius: IS_LARGE_SCREEN ? 6 : 25,
+    minWidth: IS_LARGE_SCREEN ? 180 : 140,
     justifyContent: 'center',
   },
   buttonIcon: {
-    marginRight: 6,
+    marginRight: 8,
+    fontSize: IS_LARGE_SCREEN ? 24 : 20,
   },
   watchNowText: {
     color: '#000',
-    fontSize: 16,
+    fontSize: IS_LARGE_SCREEN ? 18 : 16,
     fontWeight: '600',
   },
   addToListButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    width: IS_LARGE_SCREEN ? 56 : 44,
+    height: IS_LARGE_SCREEN ? 56 : 44,
+    borderRadius: IS_LARGE_SCREEN ? 28 : 22,
+    backgroundColor: 'rgba(109, 109, 110, 0.7)',
     borderWidth: 2,
     borderColor: '#fff',
     alignItems: 'center',

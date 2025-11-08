@@ -1,8 +1,14 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, Platform } from 'react-native';
 import { TMDBService } from '../services/TMDBService';
 import { AniListService } from '../services/AniListService';
 import { CachedImage } from './CachedImage';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const IS_LARGE_SCREEN = SCREEN_WIDTH >= 768;
+const IS_WEB = Platform.OS === 'web';
+const CARD_WIDTH = IS_LARGE_SCREEN && IS_WEB ? 220 : 140;
+const CARD_HEIGHT = IS_LARGE_SCREEN && IS_WEB ? 330 : 210;
 
 export const TrendingItem = ({ item, onPress, variant = 'horizontal' }) => {
   // Check if it's a manga (AniList) or movie/TV (TMDB)
@@ -70,20 +76,27 @@ export const TrendingItem = ({ item, onPress, variant = 'horizontal' }) => {
 
 const styles = StyleSheet.create({
   container: {
-    width: 140,
-    marginRight: 12,
+    width: CARD_WIDTH,
+    marginRight: IS_LARGE_SCREEN ? 16 : 12,
   },
   gridContainer: {
     width: '100%',
     marginRight: 0,
   },
   posterContainer: {
-    width: 140,
-    height: 210,
-    borderRadius: 12,
+    width: CARD_WIDTH,
+    height: CARD_HEIGHT,
+    borderRadius: IS_LARGE_SCREEN ? 8 : 12,
     overflow: 'hidden',
     backgroundColor: '#1a1a1a',
-    marginBottom: 8,
+    marginBottom: IS_LARGE_SCREEN ? 12 : 8,
+    ...(IS_LARGE_SCREEN && {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.3,
+      shadowRadius: 8,
+      elevation: 8,
+    }),
   },
   gridPosterContainer: {
     width: '100%',
@@ -102,36 +115,36 @@ const styles = StyleSheet.create({
   },
   placeholderText: {
     color: '#666',
-    fontSize: 12,
+    fontSize: IS_LARGE_SCREEN ? 14 : 12,
   },
   ratingBadge: {
     position: 'absolute',
-    bottom: 8,
-    right: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    borderRadius: 8,
+    bottom: IS_LARGE_SCREEN ? 12 : 8,
+    right: IS_LARGE_SCREEN ? 12 : 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    paddingHorizontal: IS_LARGE_SCREEN ? 8 : 6,
+    paddingVertical: IS_LARGE_SCREEN ? 6 : 4,
+    borderRadius: IS_LARGE_SCREEN ? 6 : 8,
   },
   ratingText: {
     color: '#fff',
-    fontSize: 11,
+    fontSize: IS_LARGE_SCREEN ? 13 : 11,
     fontWeight: '600',
   },
   infoContainer: {
-    width: 140,
+    width: CARD_WIDTH,
   },
   gridInfoContainer: {
     width: '100%',
   },
   title: {
-    fontSize: 14,
+    fontSize: IS_LARGE_SCREEN ? 16 : 14,
     fontWeight: '600',
     color: '#fff',
-    marginBottom: 4,
+    marginBottom: IS_LARGE_SCREEN ? 6 : 4,
   },
   year: {
-    fontSize: 12,
+    fontSize: IS_LARGE_SCREEN ? 14 : 12,
     color: '#888',
   },
 });

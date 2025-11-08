@@ -80,11 +80,40 @@ export default function VideoPlayerScreen({ route, navigation }) {
   
   // Video source state
   const [videoSource, setVideoSource] = useState('vixsrc');
+  
+  // Fullscreen state
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const videoContainerRef = useRef(null);
 
   // Load subtitle settings and video source on mount
   useEffect(() => {
     loadSubtitleSettings();
     loadVideoSource();
+    
+    // Listen for fullscreen changes (web)
+    if (Platform.OS === 'web') {
+      const handleFullscreenChange = () => {
+        const isCurrentlyFullscreen = !!(
+          document.fullscreenElement ||
+          document.webkitFullscreenElement ||
+          document.mozFullScreenElement ||
+          document.msFullscreenElement
+        );
+        setIsFullscreen(isCurrentlyFullscreen);
+      };
+
+      document.addEventListener('fullscreenchange', handleFullscreenChange);
+      document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+      return () => {
+        document.removeEventListener('fullscreenchange', handleFullscreenChange);
+        document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+        document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+        document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+      };
+    }
   }, []);
 
   const loadVideoSource = async () => {
@@ -1210,6 +1239,64 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   const playbackRates = [0.5, 1.0, 1.5, 1.75, 2.0];
 
+  // Fullscreen toggle function
+  const toggleFullscreen = async () => {
+    if (Platform.OS === 'web') {
+      try {
+        if (!isFullscreen) {
+          // Enter fullscreen - use the video element if available, otherwise use document
+          const videoElement = videoRef.current?._nativeView?._video?.nativeEvent?.target;
+          let element = videoElement || document.documentElement;
+
+          if (element.requestFullscreen) {
+            await element.requestFullscreen();
+          } else if (element.webkitRequestFullscreen) {
+            await element.webkitRequestFullscreen();
+          } else if (element.mozRequestFullScreen) {
+            await element.mozRequestFullScreen();
+          } else if (element.msRequestFullscreen) {
+            await element.msRequestFullscreen();
+          } else {
+            // Fallback: try to find video element in DOM
+            const videoEl = document.querySelector('video');
+            if (videoEl) {
+              if (videoEl.requestFullscreen) {
+                await videoEl.requestFullscreen();
+              } else if (videoEl.webkitRequestFullscreen) {
+                await videoEl.webkitRequestFullscreen();
+              } else if (videoEl.mozRequestFullScreen) {
+                await videoEl.mozRequestFullScreen();
+              } else if (videoEl.msRequestFullscreen) {
+                await videoEl.msRequestFullscreen();
+              }
+            } else {
+              // Last resort: fullscreen the document
+              if (document.documentElement.requestFullscreen) {
+                await document.documentElement.requestFullscreen();
+              }
+            }
+          }
+        } else {
+          // Exit fullscreen
+          if (document.exitFullscreen) {
+            await document.exitFullscreen();
+          } else if (document.webkitExitFullscreen) {
+            await document.webkitExitFullscreen();
+          } else if (document.mozCancelFullScreen) {
+            await document.mozCancelFullScreen();
+          } else if (document.msExitFullscreen) {
+            await document.msExitFullscreen();
+          }
+        }
+      } catch (error) {
+        console.error('Error toggling fullscreen:', error);
+      }
+    } else {
+      // On native, just toggle state (orientation handles fullscreen)
+      setIsFullscreen(!isFullscreen);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar hidden={true} />
@@ -1231,7 +1318,10 @@ export default function VideoPlayerScreen({ route, navigation }) {
           </TouchableOpacity>
         </View>
       ) : streamUrl ? (
-        <View style={styles.videoContainer}>
+        <View 
+          ref={videoContainerRef}
+          style={[styles.videoContainer, isFullscreen && styles.videoContainerFullscreen]}
+        >
           <Video
             ref={videoRef}
             style={styles.video}
@@ -1541,6 +1631,23 @@ export default function VideoPlayerScreen({ route, navigation }) {
                           </BlurView>
                       </Animated.View>
                     </View>
+
+                    {/* Fullscreen Button - Web only */}
+                    {Platform.OS === 'web' && (
+                      <TouchableOpacity
+                        style={styles.controlButton}
+                        onPress={toggleFullscreen}
+                        activeOpacity={0.7}
+                      >
+                        <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
+                          <Ionicons 
+                            name={isFullscreen ? "contract" : "expand"} 
+                            size={20} 
+                            color="#fff" 
+                          />
+                        </BlurView>
+                      </TouchableOpacity>
+                    )}
 
                     {/* Menu Button */}
                     <View style={styles.menuButtonWrapper}>
@@ -1891,6 +1998,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     width: '100%',
     height: '100%',
+  },
+  videoContainerFullscreen: {
+    ...(Platform.OS === 'web' && {
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      zIndex: 99999,
+    }),
   },
   video: {
     width: '100%',

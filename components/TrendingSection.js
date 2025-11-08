@@ -1,6 +1,10 @@
 import React from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, ActivityIndicator, Dimensions, Platform } from 'react-native';
 import { TrendingItem } from './TrendingItem';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const IS_LARGE_SCREEN = SCREEN_WIDTH >= 768;
+const IS_WEB = Platform.OS === 'web';
 
 export const TrendingSection = ({ title, icon, items, onItemPress, loading = false }) => {
   const isLoading = Boolean(loading);
@@ -44,45 +48,47 @@ export const TrendingSection = ({ title, icon, items, onItemPress, loading = fal
 
 const styles = StyleSheet.create({
   container: {
-    marginBottom: 20,
+    marginBottom: IS_LARGE_SCREEN ? 40 : 20,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    marginBottom: 10,
+    paddingHorizontal: IS_LARGE_SCREEN ? 60 : 20,
+    marginBottom: IS_LARGE_SCREEN ? 16 : 10,
   },
   titleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   icon: {
-    fontSize: 16,
+    fontSize: IS_LARGE_SCREEN ? 20 : 16,
   },
   title: {
-    fontSize: 20,
-    fontWeight: '600',
+    fontSize: IS_LARGE_SCREEN ? 28 : 20,
+    fontWeight: '700',
     color: '#fff',
+    letterSpacing: IS_LARGE_SCREEN ? 0.5 : 0,
   },
   scrollContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: IS_LARGE_SCREEN ? 60 : 20,
+    paddingRight: IS_LARGE_SCREEN ? 60 : 20,
   },
   loadingContainer: {
-    padding: 20,
+    padding: IS_LARGE_SCREEN ? 40 : 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
   loadingText: {
     marginTop: 8,
-    fontSize: 12,
+    fontSize: IS_LARGE_SCREEN ? 14 : 12,
     color: '#888',
   },
   emptyContainer: {
-    padding: 20,
+    padding: IS_LARGE_SCREEN ? 40 : 20,
     alignItems: 'center',
   },
   emptyText: {
-    fontSize: 14,
+    fontSize: IS_LARGE_SCREEN ? 16 : 14,
     color: '#666',
   },
 });

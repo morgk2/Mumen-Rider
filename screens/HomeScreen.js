@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, Animated, StatusBar } from 'react-native';
+import { StyleSheet, Text, View, Animated, StatusBar, Dimensions, Platform } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const IS_LARGE_SCREEN = SCREEN_WIDTH >= 768;
+const IS_WEB = Platform.OS === 'web';
 import { TrendingSection } from '../components/TrendingSection';
 import { FeaturedContent } from '../components/FeaturedContent';
 import { FeaturedContentSkeleton } from '../components/FeaturedContentSkeleton';
@@ -406,20 +410,28 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000',
+    ...(IS_WEB && {
+      maxWidth: IS_LARGE_SCREEN ? 1920 : '100%',
+      alignSelf: 'center',
+      width: '100%',
+    }),
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 20,
+    paddingBottom: IS_LARGE_SCREEN ? 40 : 20,
+    ...(IS_LARGE_SCREEN && IS_WEB && {
+      paddingHorizontal: 60,
+    }),
   },
   header: {
-    paddingHorizontal: 20,
+    paddingHorizontal: IS_LARGE_SCREEN ? 60 : 20,
     paddingTop: 20,
     paddingBottom: 10,
   },
   headerTitle: {
-    fontSize: 32,
+    fontSize: IS_LARGE_SCREEN ? 48 : 32,
     fontWeight: 'bold',
     color: '#fff',
   },
