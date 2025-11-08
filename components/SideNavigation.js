@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform, Dimensions } from 'react-native';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -9,14 +9,47 @@ const IS_LARGE_SCREEN = SCREEN_WIDTH >= 768;
 const IS_WEB = Platform.OS === 'web';
 
 export const SideNavigation = () => {
+  // Hooks must be called unconditionally
   const navigation = useNavigation();
-  const route = useRoute();
   const insets = useSafeAreaInsets();
+  const [currentRoute, setCurrentRoute] = useState('Home');
   
   // Only show side nav on web and large screens
   if (!IS_WEB || !IS_LARGE_SCREEN) {
     return null;
   }
+
+  // Listen to navigation state changes
+  useEffect(() => {
+    // Get initial route
+    const getCurrentRouteName = (state) => {
+      if (!state) return 'Home';
+      const route = state.routes[state.index];
+      if (!route) return 'Home';
+      // Handle nested navigators
+      if (route.state && route.state.routes && route.state.routes.length > 0) {
+        const nestedRoute = route.state.routes[route.state.index];
+        return nestedRoute?.name || route.name || 'Home';
+      }
+      return route.name || 'Home';
+    };
+
+    // Set initial route
+    const state = navigation.getState();
+    if (state) {
+      setCurrentRoute(getCurrentRouteName(state));
+    }
+
+    // Listen for state changes
+    const unsubscribe = navigation.addListener('state', (e) => {
+      const newState = e.data.state;
+      if (newState) {
+        setCurrentRoute(getCurrentRouteName(newState));
+      }
+    });
+
+    return unsubscribe;
+  }, [navigation]);
 
   const navItems = [
     { name: 'Home', icon: 'home', route: 'Home' },
@@ -26,35 +59,10 @@ export const SideNavigation = () => {
     { name: 'Profile', icon: 'person', route: 'Profile' },
   ];
 
-  // Get current route name from navigation state
-  const getCurrentRoute = () => {
-    const state = navigation.getState();
-    if (state) {
-      const route = state.routes[state.index];
-      return route?.name || 'Home';
-    }
-    return 'Home';
-  };
-
-  const [currentRoute, setCurrentRoute] = React.useState(getCurrentRoute());
-  
-  // Update current route when navigation state changes
-  React.useEffect(() => {
-    // Initial route
-    setCurrentRoute(getCurrentRoute());
-    
-    // Listen for focus events on each screen
-    const unsubscribe = navigation.addListener('state', () => {
-      setCurrentRoute(getCurrentRoute());
-    });
-    
-    return unsubscribe;
-  }, [navigation]);
-
-  const handleNavPress = (routeName) => {
-    if (navigation) {
+  const handleNavPress = (targetRoute) => {
+    if (navigation && targetRoute !== currentRoute) {
       try {
-        navigation.navigate(routeName);
+        navigation.navigate(targetRoute);
       } catch (error) {
         console.error('Navigation error:', error);
       }
@@ -150,4 +158,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
-
