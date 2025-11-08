@@ -183,8 +183,14 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const menuModalDownwardTranslate = useRef(new Animated.Value(0)).current;
 
   // Lock orientation to landscape when screen mounts or comes into focus
+  // Only on native platforms - web browsers don't support orientation locking
   useFocusEffect(
     React.useCallback(() => {
+      // Skip orientation locking on web
+      if (Platform.OS === 'web') {
+        return;
+      }
+
       let isLocked = false;
       
       const lockOrientation = async () => {
@@ -193,7 +199,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
           await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
           isLocked = true;
         } catch (error) {
-          console.error('Error locking orientation:', error);
+          // Silently fail - orientation locking is not always available
+          // Don't log error on web or unsupported platforms
+          if (Platform.OS !== 'web') {
+            console.error('Error locking orientation:', error);
+          }
         }
       };
 
@@ -212,7 +222,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
         clearTimeout(timeoutId);
         // Unlock orientation when screen loses focus to allow other screens to rotate freely
         ScreenOrientation.unlockAsync().catch(err => {
-          console.error('Error unlocking orientation:', err);
+          // Silently fail - orientation unlocking is not always available
+          // Don't log error on web or unsupported platforms
+          if (Platform.OS !== 'web') {
+            console.error('Error unlocking orientation:', err);
+          }
         });
       };
     }, [])
@@ -1346,7 +1360,39 @@ export default function VideoPlayerScreen({ route, navigation }) {
             }}
             onError={(error) => {
               console.error('Video error:', error);
-              setError('Video playback error');
+              
+              // Handle different error formats
+              let errorMessage = 'Unknown video playback error';
+              
+              if (error) {
+                if (typeof error === 'string') {
+                  errorMessage = error;
+                } else if (error.message) {
+                  errorMessage = error.message;
+                } else if (error.error?.message) {
+                  errorMessage = error.error.message;
+                } else if (error.localizedDescription) {
+                  errorMessage = error.localizedDescription;
+                } else if (error.code) {
+                  errorMessage = `Error code: ${error.code}`;
+                }
+              }
+              
+              // Don't show error for network issues that might recover
+              // Don't show error for codec issues that are non-critical
+              const isNonCriticalError = 
+                error?.code === 'E_NETWORK' || 
+                errorMessage.toLowerCase().includes('network') ||
+                errorMessage.toLowerCase().includes('codec') ||
+                errorMessage.toLowerCase().includes('format');
+              
+              if (isNonCriticalError) {
+                console.warn('Non-critical video error (may recover):', errorMessage);
+                // Don't set error state for non-critical issues
+                return;
+              }
+              
+              setError(`Video playback error: ${errorMessage}`);
             }}
           />
 

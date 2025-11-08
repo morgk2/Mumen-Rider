@@ -10,6 +10,7 @@ import {
   Dimensions,
   ActivityIndicator,
   Animated,
+  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,7 +31,9 @@ import { CachedImage } from '../components/CachedImage';
 import { Alert, Linking } from 'react-native';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const FEATURED_HEIGHT = SCREEN_HEIGHT * 0.6;
+const IS_LARGE_SCREEN = SCREEN_WIDTH >= 768;
+const IS_WEB = Platform.OS === 'web';
+const FEATURED_HEIGHT = IS_LARGE_SCREEN && IS_WEB ? Math.min(SCREEN_HEIGHT * 0.75, 900) : SCREEN_HEIGHT * 0.6;
 
 // Genre ID to name mapping
 const GENRE_MAP = {
@@ -1078,6 +1081,13 @@ export default function MovieDetailsScreen({ route, navigation }) {
             </TouchableOpacity>
           </View>
 
+          {/* Overview Section */}
+          {overview && (
+            <View style={styles.overviewSection}>
+              <Text style={styles.overviewText}>{overview}</Text>
+            </View>
+          )}
+
           {/* Trailer Section */}
           {trailer && (
             <View style={styles.trailerSection}>
@@ -1313,34 +1323,36 @@ const styles = StyleSheet.create({
   },
   titleContainer: {
     position: 'absolute',
-    bottom: 80,
-    left: 20,
-    right: 20,
-    alignItems: 'center',
+    bottom: IS_LARGE_SCREEN && IS_WEB ? 120 : 80,
+    left: IS_LARGE_SCREEN && IS_WEB ? 60 : 20,
+    right: IS_LARGE_SCREEN && IS_WEB ? 60 : 20,
+    alignItems: IS_LARGE_SCREEN && IS_WEB ? 'flex-start' : 'center',
     zIndex: 2,
+    maxWidth: IS_LARGE_SCREEN && IS_WEB ? 800 : '100%',
   },
   title: {
-    fontSize: 48,
+    fontSize: IS_LARGE_SCREEN && IS_WEB ? 72 : 48,
     fontWeight: 'bold',
     color: '#fff',
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 10,
-    textAlign: 'center',
+    textAlign: IS_LARGE_SCREEN && IS_WEB ? 'left' : 'center',
   },
   titleLogo: {
-    width: '70%',
-    height: 120,
-    maxWidth: 400,
-    alignSelf: 'center',
+    width: IS_LARGE_SCREEN && IS_WEB ? '60%' : '70%',
+    height: IS_LARGE_SCREEN && IS_WEB ? 180 : 120,
+    maxWidth: IS_LARGE_SCREEN && IS_WEB ? 600 : 400,
+    alignSelf: IS_LARGE_SCREEN && IS_WEB ? 'flex-start' : 'center',
   },
   infoSection: {
     position: 'absolute',
-    bottom: -10,
-    left: 20,
-    right: 20,
-    alignItems: 'center',
+    bottom: IS_LARGE_SCREEN && IS_WEB ? 20 : -10,
+    left: IS_LARGE_SCREEN && IS_WEB ? 60 : 20,
+    right: IS_LARGE_SCREEN && IS_WEB ? 60 : 20,
+    alignItems: IS_LARGE_SCREEN && IS_WEB ? 'flex-start' : 'center',
     zIndex: 2,
+    maxWidth: IS_LARGE_SCREEN && IS_WEB ? 800 : '100%',
   },
   dateRow: {
     flexDirection: 'row',
@@ -1351,7 +1363,7 @@ const styles = StyleSheet.create({
   infoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: IS_LARGE_SCREEN && IS_WEB ? 'flex-start' : 'center',
     flexWrap: 'wrap',
     marginBottom: 12,
   },
@@ -1372,7 +1384,7 @@ const styles = StyleSheet.create({
   genresContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'center',
+    justifyContent: IS_LARGE_SCREEN && IS_WEB ? 'flex-start' : 'center',
     alignItems: 'center',
     marginTop: 4,
   },
@@ -1428,43 +1440,46 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   contentSection: {
-    padding: 16,
-    paddingTop: 40,
+    padding: IS_LARGE_SCREEN && IS_WEB ? 40 : 16,
+    paddingTop: IS_LARGE_SCREEN && IS_WEB ? 60 : 40,
+    paddingHorizontal: IS_LARGE_SCREEN && IS_WEB ? 60 : 16,
     backgroundColor: '#000',
     position: 'relative',
     marginTop: -20,
   },
   dateText: {
-    fontSize: 14,
+    fontSize: IS_LARGE_SCREEN && IS_WEB ? 16 : 14,
     fontWeight: 'bold',
     color: '#fff',
   },
   actionSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: IS_LARGE_SCREEN && IS_WEB ? 24 : 16,
+    justifyContent: IS_LARGE_SCREEN && IS_WEB ? 'flex-start' : 'center',
   },
   playButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 25,
-    flex: 1,
+    paddingHorizontal: IS_LARGE_SCREEN && IS_WEB ? 32 : 24,
+    paddingVertical: IS_LARGE_SCREEN && IS_WEB ? 16 : 12,
+    borderRadius: IS_LARGE_SCREEN && IS_WEB ? 6 : 25,
+    flex: IS_LARGE_SCREEN && IS_WEB ? 0 : 1,
     justifyContent: 'center',
+    minWidth: IS_LARGE_SCREEN && IS_WEB ? 180 : undefined,
   },
   playButtonText: {
-    fontSize: 16,
+    fontSize: IS_LARGE_SCREEN && IS_WEB ? 18 : 16,
     fontWeight: '600',
     color: '#000',
     marginLeft: 6,
   },
   downloadButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    width: IS_LARGE_SCREEN && IS_WEB ? 56 : 44,
+    height: IS_LARGE_SCREEN && IS_WEB ? 56 : 44,
+    borderRadius: IS_LARGE_SCREEN && IS_WEB ? 28 : 22,
+    backgroundColor: 'rgba(109, 109, 110, 0.7)',
     borderWidth: 2,
     borderColor: '#fff',
     alignItems: 'center',
@@ -1489,10 +1504,10 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   bookmarkButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    width: IS_LARGE_SCREEN && IS_WEB ? 56 : 44,
+    height: IS_LARGE_SCREEN && IS_WEB ? 56 : 44,
+    borderRadius: IS_LARGE_SCREEN && IS_WEB ? 28 : 22,
+    backgroundColor: 'rgba(109, 109, 110, 0.7)',
     borderWidth: 2,
     borderColor: '#fff',
     alignItems: 'center',
@@ -1503,10 +1518,10 @@ const styles = StyleSheet.create({
     borderColor: '#fff',
   },
   collectionButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    width: IS_LARGE_SCREEN && IS_WEB ? 56 : 44,
+    height: IS_LARGE_SCREEN && IS_WEB ? 56 : 44,
+    borderRadius: IS_LARGE_SCREEN && IS_WEB ? 28 : 22,
+    backgroundColor: 'rgba(109, 109, 110, 0.7)',
     borderWidth: 2,
     borderColor: '#fff',
     alignItems: 'center',
@@ -1540,10 +1555,10 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   episodesTitle: {
-    fontSize: 24,
+    fontSize: IS_LARGE_SCREEN && IS_WEB ? 28 : 24,
     fontWeight: 'bold',
     color: '#fff',
-    marginBottom: 12,
+    marginBottom: IS_LARGE_SCREEN && IS_WEB ? 16 : 12,
   },
   seasonSlider: {
     marginTop: 12,
@@ -1628,10 +1643,10 @@ const styles = StyleSheet.create({
     marginTop: 32,
   },
   castTitle: {
-    fontSize: 24,
+    fontSize: IS_LARGE_SCREEN && IS_WEB ? 28 : 24,
     fontWeight: 'bold',
     color: '#fff',
-    marginBottom: 16,
+    marginBottom: IS_LARGE_SCREEN && IS_WEB ? 16 : 12,
   },
   castSlider: {
     marginTop: 0,
@@ -1643,13 +1658,23 @@ const styles = StyleSheet.create({
     marginTop: 32,
   },
   reviewsTitle: {
-    fontSize: 24,
+    fontSize: IS_LARGE_SCREEN && IS_WEB ? 28 : 24,
     fontWeight: 'bold',
     color: '#fff',
-    marginBottom: 16,
+    marginBottom: IS_LARGE_SCREEN && IS_WEB ? 16 : 12,
   },
   reviewsList: {
     marginTop: 0,
+  },
+  overviewSection: {
+    marginTop: IS_LARGE_SCREEN && IS_WEB ? 24 : 16,
+    marginBottom: IS_LARGE_SCREEN && IS_WEB ? 24 : 16,
+  },
+  overviewText: {
+    fontSize: IS_LARGE_SCREEN && IS_WEB ? 18 : 16,
+    lineHeight: IS_LARGE_SCREEN && IS_WEB ? 28 : 24,
+    color: '#fff',
+    textAlign: IS_LARGE_SCREEN && IS_WEB ? 'left' : 'left',
   },
   trailerSection: {
     marginTop: 32,

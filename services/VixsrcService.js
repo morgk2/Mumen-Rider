@@ -224,15 +224,27 @@ export const VixsrcService = {
       if (Platform.OS === 'web') {
         const apiBaseUrl = getApiBaseUrl();
         if (apiBaseUrl) {
-          const proxyUrl = `${apiBaseUrl}/api/proxy-subtitles?url=${encodeURIComponent(url)}`;
-          const proxyResponse = await fetch(proxyUrl);
-          
-          if (!proxyResponse.ok) {
-            console.warn('Failed to fetch subtitles via proxy:', proxyResponse.status);
+          try {
+            const proxyUrl = `${apiBaseUrl}/api/proxy-subtitles?url=${encodeURIComponent(url)}`;
+            const proxyResponse = await fetch(proxyUrl);
+            
+            if (!proxyResponse.ok) {
+              // Silently fail for 403/404 - subtitle API might be unavailable
+              if (proxyResponse.status === 403 || proxyResponse.status === 404) {
+                console.warn('Subtitle API unavailable (403/404), skipping subtitles');
+                return [];
+              }
+              // Log other errors but don't show to user
+              console.warn('Failed to fetch subtitles via proxy:', proxyResponse.status);
+              return [];
+            }
+            
+            data = await proxyResponse.json();
+          } catch (error) {
+            // Silently fail - subtitles are optional
+            console.warn('Error fetching subtitles via proxy:', error.message);
             return [];
           }
-          
-          data = await proxyResponse.json();
         } else {
           console.warn('API base URL not available on web');
           return [];

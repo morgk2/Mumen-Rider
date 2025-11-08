@@ -3,10 +3,11 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
-import { Platform, View } from 'react-native';
+import { Platform, View, Dimensions } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
+import { SideNavigation } from './components/SideNavigation';
 import HomeScreen from './screens/HomeScreen';
 import SearchScreen from './screens/SearchScreen';
 import ProfileScreen from './screens/ProfileScreen';
@@ -23,8 +24,13 @@ import VideoSourceSettingsScreen from './screens/VideoSourceSettingsScreen';
 import DownloadsScreen from './screens/DownloadsScreen';
 import DownloadedMangaDetailsScreen from './screens/DownloadedMangaDetailsScreen';
 
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const IS_LARGE_SCREEN = SCREEN_WIDTH >= 768;
+const IS_WEB = Platform.OS === 'web';
+
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
+const RootStack = createNativeStackNavigator();
 
 function HomeStack() {
   return (
@@ -163,6 +169,54 @@ function ProfileStack() {
 }
 
 export default function App() {
+  // Use side navigation for web on large screens, bottom tabs otherwise
+  if (IS_WEB && IS_LARGE_SCREEN) {
+    return (
+      <SafeAreaProvider>
+        <NavigationContainer>
+          <StatusBar style="light" />
+          <View style={{ flexDirection: 'row', flex: 1, backgroundColor: '#000', position: 'relative' }}>
+            <SideNavigation />
+            <View style={{ flex: 1, marginLeft: 200 }}>
+              <RootStack.Navigator screenOptions={{ headerShown: false }}>
+                <RootStack.Screen name="Home" component={HomeScreen} />
+                <RootStack.Screen name="Search" component={SearchScreen} />
+                <RootStack.Screen name="Manga" component={MangaScreen} />
+                <RootStack.Screen name="Downloads" component={DownloadsScreen} />
+                <RootStack.Screen name="Profile" component={ProfileScreen} />
+                <RootStack.Screen name="MovieDetails" component={MovieDetailsScreen} />
+                <RootStack.Screen name="MangaDetails" component={MangaDetailsScreen} />
+                <RootStack.Screen 
+                  name="VideoPlayer" 
+                  component={VideoPlayerScreen}
+                  options={{
+                    presentation: 'fullScreenModal',
+                    animation: 'fade',
+                  }}
+                />
+                <RootStack.Screen 
+                  name="MangaReader" 
+                  component={MangaReaderScreen}
+                  options={{
+                    presentation: 'fullScreenModal',
+                    animation: 'fade',
+                  }}
+                />
+                <RootStack.Screen name="Settings" component={SettingsScreen} />
+                <RootStack.Screen name="SubtitleSettings" component={SubtitleSettingsScreen} />
+                <RootStack.Screen name="PlayerSettings" component={PlayerSettingsScreen} />
+                <RootStack.Screen name="VideoSourceSettings" component={VideoSourceSettingsScreen} />
+                <RootStack.Screen name="CollectionDetails" component={CollectionDetailsScreen} />
+                <RootStack.Screen name="DownloadedMangaDetails" component={DownloadedMangaDetailsScreen} />
+              </RootStack.Navigator>
+            </View>
+          </View>
+        </NavigationContainer>
+      </SafeAreaProvider>
+    );
+  }
+
+  // Bottom tabs for mobile and small screens
   return (
     <SafeAreaProvider>
       <NavigationContainer>

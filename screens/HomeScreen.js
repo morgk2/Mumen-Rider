@@ -7,6 +7,7 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const IS_LARGE_SCREEN = SCREEN_WIDTH >= 768;
 const IS_WEB = Platform.OS === 'web';
 import { TrendingSection } from '../components/TrendingSection';
+import { WideTrendingSection } from '../components/WideTrendingSection';
 import { FeaturedContent } from '../components/FeaturedContent';
 import { FeaturedContentSkeleton } from '../components/FeaturedContentSkeleton';
 import { ContinueWatchingSection } from '../components/ContinueWatchingSection';
@@ -145,7 +146,12 @@ export default function HomeScreen({ navigation }) {
   };
 
   const handleItemPress = (item) => {
-    navigation.navigate('MovieDetails', { item });
+    // For web with side nav, navigate to MovieDetails directly
+    if (IS_WEB && IS_LARGE_SCREEN) {
+      navigation.navigate('MovieDetails', { item });
+    } else {
+      navigation.navigate('MovieDetails', { item });
+    }
   };
 
   const fetchContinueReading = async () => {
@@ -368,6 +374,15 @@ export default function HomeScreen({ navigation }) {
 
         {loadingMovies ? (
           <TrendingSectionSkeleton title="Trending Movies" />
+        ) : IS_LARGE_SCREEN && IS_WEB ? (
+          <WideTrendingSection
+            title="Top 10 Movies"
+            icon=""
+            items={trendingMovies}
+            onItemPress={handleItemPress}
+            loading={loadingMovies}
+            showRankings={true}
+          />
         ) : (
           <TrendingSection
             title="Trending Movies"
@@ -380,6 +395,15 @@ export default function HomeScreen({ navigation }) {
 
         {loadingShows ? (
           <TrendingSectionSkeleton title="Trending Shows" />
+        ) : IS_LARGE_SCREEN && IS_WEB ? (
+          <WideTrendingSection
+            title="Top 10 TV Shows"
+            icon=""
+            items={trendingShows}
+            onItemPress={handleItemPress}
+            loading={loadingShows}
+            showRankings={true}
+          />
         ) : (
           <TrendingSection
             title="Trending Shows"
@@ -392,6 +416,15 @@ export default function HomeScreen({ navigation }) {
 
         {loadingAnime ? (
           <TrendingSectionSkeleton title="Trending Anime" />
+        ) : IS_LARGE_SCREEN && IS_WEB ? (
+          <WideTrendingSection
+            title="Top 10 Anime"
+            icon=""
+            items={trendingAnime}
+            onItemPress={handleItemPress}
+            loading={loadingAnime}
+            showRankings={true}
+          />
         ) : (
           <TrendingSection
             title="Trending Anime"
@@ -410,10 +443,8 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000',
-    ...(IS_WEB && {
-      maxWidth: IS_LARGE_SCREEN ? 1920 : '100%',
-      alignSelf: 'center',
-      width: '100%',
+    ...(IS_WEB && IS_LARGE_SCREEN && {
+      marginLeft: 0, // Side nav handles spacing
     }),
   },
   scrollView: {
@@ -422,7 +453,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: IS_LARGE_SCREEN ? 40 : 20,
     ...(IS_LARGE_SCREEN && IS_WEB && {
-      paddingHorizontal: 60,
+      paddingHorizontal: 40,
     }),
   },
   header: {
