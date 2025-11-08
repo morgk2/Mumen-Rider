@@ -1,11 +1,46 @@
 // N3tflix Service - Alternative streaming source
 // Based on net3lix.world streaming extraction logic
 
+import { Platform } from 'react-native';
+
 const BASE_URL = 'https://net3lix.world';
+
+// Get API base URL for web platform
+const getApiBaseUrl = () => {
+  if (Platform.OS === 'web') {
+    // On web, use relative API routes (works with Vercel)
+    return typeof window !== 'undefined' ? window.location.origin : '';
+  }
+  return null;
+};
 
 // Helper function to fetch with fallback
 async function soraFetch(url, options = { headers: {}, method: 'GET', body: null, encoding: 'utf-8' }) {
   try {
+    // On web, use API proxy to bypass CORS
+    if (Platform.OS === 'web') {
+      const apiBaseUrl = getApiBaseUrl();
+      if (apiBaseUrl && options.method === 'GET') {
+        // Use proxy for GET requests
+        const proxyUrl = `${apiBaseUrl}/api/proxy-stream?url=${encodeURIComponent(url)}&service=n3tflix`;
+        const proxyResponse = await fetch(proxyUrl);
+        
+        if (!proxyResponse.ok) {
+          console.error('Proxy error:', proxyResponse.status);
+          return null;
+        }
+        
+        const proxyData = await proxyResponse.json();
+        // Return a Response-like object
+        return {
+          ok: true,
+          status: 200,
+          text: async () => proxyData.html,
+          json: async () => JSON.parse(proxyData.html),
+        };
+      }
+    }
+    
     // Try fetchv2 if available (for Sora compatibility)
     // Note: fetchv2 is a global function that might be available in some environments
     if (typeof fetchv2 !== 'undefined') {

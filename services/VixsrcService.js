@@ -1,4 +1,15 @@
+import { Platform } from 'react-native';
+
 const BASE_URL = 'https://vixsrc.to';
+
+// Get API base URL for web platform
+const getApiBaseUrl = () => {
+  if (Platform.OS === 'web') {
+    // On web, use relative API routes (works with Vercel)
+    return typeof window !== 'undefined' ? window.location.origin : '';
+  }
+  return null;
+};
 
 export const VixsrcService = {
   // Get embed URL for movie
@@ -15,19 +26,40 @@ export const VixsrcService = {
   // Uses the proven extraction logic from Sora project
   async fetchStreamUrl(embedUrl) {
     try {
-      const response = await fetch(embedUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-          'Referer': 'https://vixsrc.to/',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      });
+      let html;
       
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      // On web, use API proxy to bypass CORS
+      if (Platform.OS === 'web') {
+        const apiBaseUrl = getApiBaseUrl();
+        if (apiBaseUrl) {
+          const proxyUrl = `${apiBaseUrl}/api/proxy-stream?url=${encodeURIComponent(embedUrl)}&service=vixsrc`;
+          const proxyResponse = await fetch(proxyUrl);
+          
+          if (!proxyResponse.ok) {
+            throw new Error(`Proxy error! status: ${proxyResponse.status}`);
+          }
+          
+          const proxyData = await proxyResponse.json();
+          html = proxyData.html;
+        } else {
+          throw new Error('API base URL not available on web');
+        }
+      } else {
+        // On native platforms, use direct fetch
+        const response = await fetch(embedUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+            'Referer': 'https://vixsrc.to/',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        html = await response.text();
       }
-      
-      const html = await response.text();
       
       let stream = null;
 
@@ -186,19 +218,41 @@ export const VixsrcService = {
         url = `https://sub.wyzie.ru/search?id=${tmdbId}`;
       }
 
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-          'Accept': 'application/json',
-        },
-      });
+      let data;
+      
+      // On web, use API proxy to bypass CORS
+      if (Platform.OS === 'web') {
+        const apiBaseUrl = getApiBaseUrl();
+        if (apiBaseUrl) {
+          const proxyUrl = `${apiBaseUrl}/api/proxy-subtitles?url=${encodeURIComponent(url)}`;
+          const proxyResponse = await fetch(proxyUrl);
+          
+          if (!proxyResponse.ok) {
+            console.warn('Failed to fetch subtitles via proxy:', proxyResponse.status);
+            return [];
+          }
+          
+          data = await proxyResponse.json();
+        } else {
+          console.warn('API base URL not available on web');
+          return [];
+        }
+      } else {
+        // On native platforms, use direct fetch
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+          },
+        });
 
-      if (!response.ok) {
-        console.warn('Failed to fetch subtitles:', response.status);
-        return [];
+        if (!response.ok) {
+          console.warn('Failed to fetch subtitles:', response.status);
+          return [];
+        }
+
+        data = await response.json();
       }
-
-      const data = await response.json();
       
       // Parse subtitle tracks
       const tracks = [];
