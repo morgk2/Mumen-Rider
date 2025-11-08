@@ -17,13 +17,16 @@ import { TMDBService } from '../services/TMDBService';
 import { StorageService } from '../services/StorageService';
 import { CacheService } from '../services/CacheService';
 import { WatchProgressService } from '../services/WatchProgressService';
+import { openInExternalPlayer } from '../services/ExternalPlayerService';
+import { VixsrcService } from '../services/VixsrcService';
+import { N3tflixService } from '../services/N3tflixService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { EpisodeItem } from '../components/EpisodeItem';
 import { CastMember } from '../components/CastMember';
 import { ReviewItem } from '../components/ReviewItem';
 import CollectionPickerModal from '../components/CollectionPickerModal';
 import { CachedImage } from '../components/CachedImage';
-import { Alert } from 'react-native';
+import { Alert, Linking } from 'react-native';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const FEATURED_HEIGHT = SCREEN_HEIGHT * 0.6;
@@ -69,6 +72,8 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const [showCollectionPicker, setShowCollectionPicker] = useState(false);
   const [watchProgress, setWatchProgress] = useState(null);
   const [latestEpisodeProgress, setLatestEpisodeProgress] = useState(null);
+  const [trailer, setTrailer] = useState(null);
+  const [loadingTrailer, setLoadingTrailer] = useState(false);
   const scrollY = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -76,6 +81,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
       fetchLogo();
       fetchCastData();
       fetchReviewsData();
+      fetchTrailer();
       checkBookmarkStatus();
       loadWatchProgress();
       const isTVShow = !item.title && (item.name || item.media_type === 'tv');
@@ -216,13 +222,9 @@ export default function MovieDetailsScreen({ route, navigation }) {
         console.error('Error loading episode progress:', error);
       }
       
-      navigation.navigate('VideoPlayer', {
-        item,
-        episode,
-        season: selectedSeason,
-        episodeNumber: episode.episode_number,
-        resumePosition,
-      });
+      // Check if external player is selected
+      const externalPlayer = await StorageService.getExternalPlayer();
+      await playVideo(item, episode, selectedSeason, episode.episode_number, resumePosition, externalPlayer);
     }
   };
 
@@ -255,6 +257,49 @@ export default function MovieDetailsScreen({ route, navigation }) {
       setReviews([]);
     } finally {
       setLoadingReviews(false);
+    }
+  };
+
+  const fetchTrailer = async () => {
+    if (!item || !item.id) return;
+    
+    setLoadingTrailer(true);
+    try {
+      const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+      const videos = await TMDBService.fetchVideos(mediaType, item.id);
+      
+      // Find the first official trailer (prefer official, then teaser, then any trailer)
+      const officialTrailer = videos.find(
+        v => v.type === 'Trailer' && v.official === true && v.site === 'YouTube'
+      ) || videos.find(
+        v => v.type === 'Teaser' && v.official === true && v.site === 'YouTube'
+      ) || videos.find(
+        v => (v.type === 'Trailer' || v.type === 'Teaser') && v.site === 'YouTube'
+      );
+      
+      if (officialTrailer && officialTrailer.key) {
+        setTrailer(officialTrailer);
+      } else {
+        setTrailer(null);
+      }
+    } catch (error) {
+      console.error('Error fetching trailer:', error);
+      setTrailer(null);
+    } finally {
+      setLoadingTrailer(false);
+    }
+  };
+
+  const handleTrailerPress = () => {
+    if (!trailer || !trailer.key) return;
+    
+    const youtubeUrl = TMDBService.getYouTubeTrailerUrl(trailer.key);
+    if (youtubeUrl) {
+      // Open YouTube URL - will open in YouTube app if installed, otherwise in browser
+      Linking.openURL(youtubeUrl).catch(err => {
+        console.error('Error opening trailer:', err);
+        Alert.alert('Error', 'Failed to open trailer');
+      });
     }
   };
 
@@ -379,6 +424,9 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const handlePlay = async () => {
     if (!navigation || !item) return;
     
+    // Check if external player is selected
+    const externalPlayer = await StorageService.getExternalPlayer();
+    
     const isTVShow = !item.title && (item.name || item.media_type === 'tv');
     
     if (isTVShow) {
@@ -393,24 +441,13 @@ export default function MovieDetailsScreen({ route, navigation }) {
           const episode = episodesData.find(ep => ep.episode_number === episodeNumber);
           
           if (episode) {
-            navigation.navigate('VideoPlayer', {
-              item,
-              episode,
-              season,
-              episodeNumber,
-              resumePosition: position,
-            });
+            await playVideo(item, episode, season, episodeNumber, position, externalPlayer);
           } else {
             // Fallback: play S01E01
             const season1Episodes = await TMDBService.fetchTVEpisodes(item.id, 1);
             const firstEpisode = season1Episodes.find(ep => ep.episode_number === 1);
             if (firstEpisode) {
-              navigation.navigate('VideoPlayer', {
-                item,
-                episode: firstEpisode,
-                season: 1,
-                episodeNumber: 1,
-              });
+              await playVideo(item, firstEpisode, 1, 1, null, externalPlayer);
             }
           }
         } catch (error) {
@@ -420,12 +457,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
             const season1Episodes = await TMDBService.fetchTVEpisodes(item.id, 1);
             const firstEpisode = season1Episodes.find(ep => ep.episode_number === 1);
             if (firstEpisode) {
-              navigation.navigate('VideoPlayer', {
-                item,
-                episode: firstEpisode,
-                season: 1,
-                episodeNumber: 1,
-              });
+              await playVideo(item, firstEpisode, 1, 1, null, externalPlayer);
             }
           } catch (fallbackError) {
             console.error('Error fetching S01E01:', fallbackError);
@@ -437,12 +469,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
           const season1Episodes = await TMDBService.fetchTVEpisodes(item.id, 1);
           const firstEpisode = season1Episodes.find(ep => ep.episode_number === 1);
           if (firstEpisode) {
-            navigation.navigate('VideoPlayer', {
-              item,
-              episode: firstEpisode,
-              season: 1,
-              episodeNumber: 1,
-            });
+            await playVideo(item, firstEpisode, 1, 1, null, externalPlayer);
           }
         } catch (error) {
           console.error('Error fetching S01E01:', error);
@@ -451,10 +478,100 @@ export default function MovieDetailsScreen({ route, navigation }) {
     } else {
       // For movies
       const resumePosition = watchProgress ? watchProgress.position : null;
-      navigation.navigate('VideoPlayer', { 
-        item,
-        resumePosition 
-      });
+      await playVideo(item, null, null, null, resumePosition, externalPlayer);
+    }
+  };
+
+  const playVideo = async (item, episode, season, episodeNumber, resumePosition, externalPlayer) => {
+    // If external player is selected and not Default, fetch stream URL and open in external player
+    if (externalPlayer && externalPlayer !== 'Default') {
+      try {
+        // Show loading indicator
+        const source = await StorageService.getVideoSource();
+        const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+        
+        let result = null;
+        if (episode && season && episodeNumber) {
+          result = await service.fetchEpisodeWithSubtitles(item.id, season, episodeNumber);
+        } else {
+          result = await service.fetchMovieWithSubtitles(item.id);
+        }
+        
+        if (result && result.streamUrl) {
+          // Try to open in external player
+          const opened = await openInExternalPlayer(result.streamUrl, externalPlayer);
+          
+          // If failed to open external player, fall back to default player
+          if (!opened) {
+            // Fall back to default player
+            if (episode) {
+              navigation.navigate('VideoPlayer', {
+                item,
+                episode,
+                season,
+                episodeNumber,
+                resumePosition,
+              });
+            } else {
+              navigation.navigate('VideoPlayer', {
+                item,
+                resumePosition,
+              });
+            }
+          }
+        } else {
+          Alert.alert('Error', 'Failed to fetch stream URL. Using default player.');
+          // Fall back to default player
+          if (episode) {
+            navigation.navigate('VideoPlayer', {
+              item,
+              episode,
+              season,
+              episodeNumber,
+              resumePosition,
+            });
+          } else {
+            navigation.navigate('VideoPlayer', {
+              item,
+              resumePosition,
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching stream for external player:', error);
+        Alert.alert('Error', 'Failed to open external player. Using default player.');
+        // Fall back to default player
+        if (episode) {
+          navigation.navigate('VideoPlayer', {
+            item,
+            episode,
+            season,
+            episodeNumber,
+            resumePosition,
+          });
+        } else {
+          navigation.navigate('VideoPlayer', {
+            item,
+            resumePosition,
+          });
+        }
+      }
+    } else {
+      // Use default player
+      if (episode) {
+        navigation.navigate('VideoPlayer', {
+          item,
+          episode,
+          season,
+          episodeNumber,
+          resumePosition,
+        });
+      } else {
+        navigation.navigate('VideoPlayer', {
+          item,
+          resumePosition,
+        });
+      }
     }
   };
 
@@ -653,6 +770,41 @@ export default function MovieDetailsScreen({ route, navigation }) {
               />
             </TouchableOpacity>
           </View>
+
+          {/* Trailer Section */}
+          {trailer && (
+            <View style={styles.trailerSection}>
+              <Text style={styles.trailerTitle}>Trailer</Text>
+              <TouchableOpacity
+                style={styles.trailerContainer}
+                onPress={handleTrailerPress}
+                activeOpacity={0.8}
+              >
+                <View style={styles.trailerThumbnailContainer}>
+                  <CachedImage
+                    source={{ 
+                      uri: `https://img.youtube.com/vi/${trailer.key}/maxresdefault.jpg` 
+                    }}
+                    style={styles.trailerThumbnail}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.trailerPlayOverlay}>
+                    <View style={styles.trailerPlayButton}>
+                      <Ionicons name="play" size={32} color="#fff" />
+                    </View>
+                  </View>
+                </View>
+                <View style={styles.trailerInfo}>
+                  <Text style={styles.trailerName}>
+                    {trailer.name || 'Watch Trailer'}
+                  </Text>
+                  <Text style={styles.trailerType}>
+                    {trailer.type}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* Episodes Section for TV Shows */}
           {isTVShow && (
@@ -1163,6 +1315,66 @@ const styles = StyleSheet.create({
   },
   reviewsList: {
     marginTop: 0,
+  },
+  trailerSection: {
+    marginTop: 32,
+  },
+  trailerTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 16,
+  },
+  trailerContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  trailerThumbnailContainer: {
+    width: 200,
+    height: 112,
+    position: 'relative',
+  },
+  trailerThumbnail: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#1a1a1a',
+  },
+  trailerPlayOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  },
+  trailerPlayButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: '#fff',
+  },
+  trailerInfo: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 16,
+  },
+  trailerName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 4,
+  },
+  trailerType: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.6)',
   },
 });
 

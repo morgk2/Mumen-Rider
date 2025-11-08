@@ -1,14 +1,34 @@
 import React from 'react';
 import { View, Text, Image, StyleSheet, TouchableOpacity } from 'react-native';
 import { TMDBService } from '../services/TMDBService';
+import { AniListService } from '../services/AniListService';
 
 export const SearchCard = ({ item, onPress }) => {
-  const thumbnailUrl = TMDBService.getPosterURL(item.poster_path, 'w500') || 
-                       TMDBService.getBackdropURL(item.backdrop_path, 'w500');
-  const displayTitle = item.title || item.name || 'Unknown';
-  const displayDate = item.release_date || item.first_air_date || '';
-  const year = displayDate ? displayDate.substring(0, 4) : '';
-  const overview = item.overview || '';
+  // Check if it's a manga (AniList) or movie/TV (TMDB)
+  const isManga = item.title && typeof item.title === 'object';
+  
+  const thumbnailUrl = isManga 
+    ? AniListService.getCoverImage(item)
+    : (TMDBService.getPosterURL(item.poster_path, 'w500') || 
+       TMDBService.getBackdropURL(item.backdrop_path, 'w500'));
+  
+  const displayTitle = isManga 
+    ? AniListService.getMangaTitle(item)
+    : (item.title || item.name || 'Unknown');
+  
+  const displayDate = isManga 
+    ? (item.startDate ? `${item.startDate.year || ''}-${String(item.startDate.month || '').padStart(2, '0')}-${String(item.startDate.day || '').padStart(2, '0')}` : '')
+    : (item.release_date || item.first_air_date || '');
+  
+  const year = isManga
+    ? (item.startDate?.year?.toString() || '')
+    : (displayDate ? displayDate.substring(0, 4) : '');
+  
+  const overview = isManga 
+    ? (item.description || '').replace(/<[^>]*>/g, '') // Remove HTML tags
+    : (item.overview || '');
+  
+  const rating = isManga ? item.averageScore : item.vote_average;
 
   return (
     <TouchableOpacity
@@ -28,9 +48,11 @@ export const SearchCard = ({ item, onPress }) => {
             <Text style={styles.placeholderText}>No Image</Text>
           </View>
         )}
-        {item.vote_average > 0 && (
+        {rating > 0 && (
           <View style={styles.ratingBadge}>
-            <Text style={styles.ratingText}>★ {item.vote_average.toFixed(1)}</Text>
+            <Text style={styles.ratingText}>
+              ★ {isManga ? (rating / 10).toFixed(1) : rating.toFixed(1)}
+            </Text>
           </View>
         )}
       </View>

@@ -4,6 +4,10 @@ const BOOKMARKS_KEY = '@bookmarks';
 const COLLECTIONS_KEY = '@collections';
 const READING_MODE_KEY = '@reading_mode';
 const VIDEO_SOURCE_KEY = '@video_source';
+const EXTERNAL_PLAYER_KEY = '@externalPlayer';
+const LETTERBOXD_USERNAME_KEY = '@letterboxd_username';
+const LETTERBOXD_PROFILE_KEY = '@letterboxd_profile';
+const LETTERBOXD_WATCHLIST_KEY = '@letterboxd_watchlist';
 
 export class StorageService {
   // Bookmarks/Saves
@@ -255,6 +259,167 @@ export class StorageService {
     } catch (error) {
       console.error('Error setting video source:', error);
       return false;
+    }
+  }
+
+  // External Player Preferences
+  static async getExternalPlayer() {
+    try {
+      const player = await AsyncStorage.getItem(EXTERNAL_PLAYER_KEY);
+      return player || 'Default'; // Default to in-app player
+    } catch (error) {
+      console.error('Error getting external player:', error);
+      return 'Default';
+    }
+  }
+
+  static async setExternalPlayer(player) {
+    try {
+      await AsyncStorage.setItem(EXTERNAL_PLAYER_KEY, player);
+      return true;
+    } catch (error) {
+      console.error('Error setting external player:', error);
+      return false;
+    }
+  }
+
+  // Letterboxd Integration
+  static async getLetterboxdUsername() {
+    try {
+      const username = await AsyncStorage.getItem(LETTERBOXD_USERNAME_KEY);
+      return username;
+    } catch (error) {
+      console.error('Error getting Letterboxd username:', error);
+      return null;
+    }
+  }
+
+  static async setLetterboxdUsername(username) {
+    try {
+      await AsyncStorage.setItem(LETTERBOXD_USERNAME_KEY, username);
+      return true;
+    } catch (error) {
+      console.error('Error setting Letterboxd username:', error);
+      return false;
+    }
+  }
+
+  static async getLetterboxdProfile() {
+    try {
+      const profileJson = await AsyncStorage.getItem(LETTERBOXD_PROFILE_KEY);
+      if (!profileJson) return null;
+      
+      const data = JSON.parse(profileJson);
+      return {
+        profile: data.profile || data, // Support old format
+        timestamp: data.timestamp || Date.now(),
+      };
+    } catch (error) {
+      console.error('Error getting Letterboxd profile:', error);
+      return null;
+    }
+  }
+
+  static async setLetterboxdProfile(profile) {
+    try {
+      const data = {
+        profile,
+        timestamp: Date.now(),
+      };
+      await AsyncStorage.setItem(LETTERBOXD_PROFILE_KEY, JSON.stringify(data));
+      return true;
+    } catch (error) {
+      console.error('Error setting Letterboxd profile:', error);
+      return false;
+    }
+  }
+
+  static async getLetterboxdProfileTimestamp() {
+    try {
+      const cached = await this.getLetterboxdProfile();
+      return cached ? cached.timestamp : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  static async isLetterboxdProfileStale(maxAge = 24 * 60 * 60 * 1000) {
+    // Default: 24 hours
+    try {
+      const timestamp = await this.getLetterboxdProfileTimestamp();
+      if (!timestamp) return true;
+      return Date.now() - timestamp > maxAge;
+    } catch (error) {
+      return true;
+    }
+  }
+
+  static async removeLetterboxdAccount() {
+    try {
+      await AsyncStorage.removeItem(LETTERBOXD_USERNAME_KEY);
+      await AsyncStorage.removeItem(LETTERBOXD_PROFILE_KEY);
+      await AsyncStorage.removeItem(LETTERBOXD_WATCHLIST_KEY);
+      return true;
+    } catch (error) {
+      console.error('Error removing Letterboxd account:', error);
+      return false;
+    }
+  }
+
+  static async getLetterboxdWatchlist() {
+    try {
+      const watchlistJson = await AsyncStorage.getItem(LETTERBOXD_WATCHLIST_KEY);
+      if (!watchlistJson) return [];
+      
+      const data = JSON.parse(watchlistJson);
+      // Support old format (array) and new format (object with timestamp)
+      if (Array.isArray(data)) {
+        return {
+          watchlist: data,
+          timestamp: Date.now(),
+        };
+      }
+      return {
+        watchlist: data.watchlist || [],
+        timestamp: data.timestamp || Date.now(),
+      };
+    } catch (error) {
+      console.error('Error getting Letterboxd watchlist:', error);
+      return { watchlist: [], timestamp: null };
+    }
+  }
+
+  static async setLetterboxdWatchlist(watchlist) {
+    try {
+      const data = {
+        watchlist,
+        timestamp: Date.now(),
+      };
+      await AsyncStorage.setItem(LETTERBOXD_WATCHLIST_KEY, JSON.stringify(data));
+      return true;
+    } catch (error) {
+      console.error('Error setting Letterboxd watchlist:', error);
+      return false;
+    }
+  }
+
+  static async getLetterboxdWatchlistTimestamp() {
+    try {
+      const cached = await this.getLetterboxdWatchlist();
+      return cached ? cached.timestamp : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  static async isLetterboxdWatchlistStale(maxAge = 6 * 60 * 60 * 1000) {
+    // Default: 6 hours (watchlist updates more frequently)
+    try {
+      const timestamp = await this.getLetterboxdWatchlistTimestamp();
+      if (!timestamp) return true;
+      return Date.now() - timestamp > maxAge;
+    } catch (error) {
+      return true;
     }
   }
 }

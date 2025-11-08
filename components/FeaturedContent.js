@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { View, Image, StyleSheet, Dimensions, Text, TouchableOpacity, Animated } from 'react-native';
+import { View, StyleSheet, Dimensions, Text, TouchableOpacity, Animated } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { TMDBService } from '../services/TMDBService';
+import { CachedImage } from './CachedImage';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const FEATURED_HEIGHT = SCREEN_HEIGHT * 0.6;
@@ -97,7 +98,7 @@ export const FeaturedContent = ({ item, navigation, scrollY }) => {
         ]}
       >
         {backdropUrl ? (
-          <Image
+          <CachedImage
             source={{ uri: backdropUrl }}
             style={styles.backdrop}
             resizeMode="cover"
@@ -119,7 +120,7 @@ export const FeaturedContent = ({ item, navigation, scrollY }) => {
         {/* Title/Logo - Centered */}
         <View style={styles.titleContainer}>
           {logoUrl ? (
-            <Image
+            <CachedImage
               source={{ uri: logoUrl }}
               style={styles.logo}
               resizeMode="contain"

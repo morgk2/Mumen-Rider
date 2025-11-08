@@ -297,6 +297,92 @@ export const AniListService = {
     }
   },
 
+  // Search manga
+  async searchManga(query, page = 1, perPage = 20) {
+    try {
+      const searchQuery = `
+        query ($page: Int, $perPage: Int, $search: String) {
+          Page(page: $page, perPage: $perPage) {
+            pageInfo {
+              total
+              currentPage
+              lastPage
+              hasNextPage
+              perPage
+            }
+            media(type: MANGA, search: $search, sort: SEARCH_MATCH) {
+              id
+              title {
+                romaji
+                english
+                native
+              }
+              coverImage {
+                large
+                medium
+              }
+              bannerImage
+              description
+              chapters
+              volumes
+              status
+              format
+              genres
+              tags {
+                name
+              }
+              averageScore
+              popularity
+              startDate {
+                year
+                month
+                day
+              }
+              endDate {
+                year
+                month
+                day
+              }
+            }
+          }
+        }
+      `;
+
+      const response = await fetch(GRAPHQL_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          query: searchQuery,
+          variables: { page, perPage, search: query },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.errors) {
+        console.error('AniList GraphQL errors:', data.errors);
+        return { results: [], totalPages: 1, page: 1 };
+      }
+
+      const pageInfo = data.data?.Page?.pageInfo || {};
+      return {
+        results: data.data?.Page?.media || [],
+        totalPages: pageInfo.lastPage || 1,
+        page: pageInfo.currentPage || 1,
+      };
+    } catch (error) {
+      console.error('Error searching manga:', error);
+      return { results: [], totalPages: 1, page: 1 };
+    }
+  },
+
   // Helper to get manga title
   getMangaTitle(manga) {
     return manga?.title?.english || manga?.title?.romaji || manga?.title?.native || 'Unknown';

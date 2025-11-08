@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, Animated } from 'react-native';
+import { StyleSheet, Text, View, Animated, StatusBar } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { TrendingSection } from '../components/TrendingSection';
 import { FeaturedContent } from '../components/FeaturedContent';
 import { FeaturedContentSkeleton } from '../components/FeaturedContentSkeleton';
@@ -11,8 +12,14 @@ import { TMDBService } from '../services/TMDBService';
 import { WatchProgressService } from '../services/WatchProgressService';
 import { ReadProgressService } from '../services/ReadProgressService';
 import { AniListService } from '../services/AniListService';
+import { StorageService } from '../services/StorageService';
+import { openInExternalPlayer } from '../services/ExternalPlayerService';
+import { VixsrcService } from '../services/VixsrcService';
+import { N3tflixService } from '../services/N3tflixService';
+import { Alert } from 'react-native';
 
 export default function HomeScreen({ navigation }) {
+  const insets = useSafeAreaInsets();
   const scrollY = useRef(new Animated.Value(0)).current;
   const [featuredItem, setFeaturedItem] = useState(null);
   const [trendingMovies, setTrendingMovies] = useState([]);
@@ -180,31 +187,116 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
-  const handleContinueWatchingPress = (item, progress) => {
-    if (progress.season !== null && progress.episodeNumber !== null) {
-      // TV show episode - need to fetch episode data
-      TMDBService.fetchTVEpisodes(item.id, progress.season)
-        .then(episodes => {
+  const handleContinueWatchingPress = async (item, progress) => {
+    try {
+      const externalPlayer = await StorageService.getExternalPlayer();
+      
+      if (progress.season !== null && progress.episodeNumber !== null) {
+        // TV show episode - need to fetch episode data
+        try {
+          const episodes = await TMDBService.fetchTVEpisodes(item.id, progress.season);
           const episode = episodes.find(ep => ep.episode_number === progress.episodeNumber);
+          if (episode) {
+            await playVideo(item, episode, progress.season, progress.episodeNumber, progress.position, externalPlayer);
+          }
+        } catch (error) {
+          console.error('Error fetching episode:', error);
+        }
+      } else {
+        // Movie
+        await playVideo(item, null, null, null, progress.position, externalPlayer);
+      }
+    } catch (error) {
+      console.error('Error in handleContinueWatchingPress:', error);
+    }
+  };
+
+  const playVideo = async (item, episode, season, episodeNumber, resumePosition, externalPlayer) => {
+    // If external player is selected and not Default, fetch stream URL and open in external player
+    if (externalPlayer && externalPlayer !== 'Default') {
+      try {
+        const source = await StorageService.getVideoSource();
+        const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+        
+        let result = null;
+        if (episode && season && episodeNumber) {
+          result = await service.fetchEpisodeWithSubtitles(item.id, season, episodeNumber);
+        } else {
+          result = await service.fetchMovieWithSubtitles(item.id);
+        }
+        
+        if (result && result.streamUrl) {
+          // Try to open in external player
+          const opened = await openInExternalPlayer(result.streamUrl, externalPlayer);
+          
+          // If failed to open external player, fall back to default player
+          if (!opened) {
+            if (episode) {
+              navigation.navigate('VideoPlayer', {
+                item,
+                episode,
+                season,
+                episodeNumber,
+                resumePosition,
+              });
+            } else {
+              navigation.navigate('VideoPlayer', {
+                item,
+                resumePosition,
+              });
+            }
+          }
+        } else {
+          Alert.alert('Error', 'Failed to fetch stream URL. Using default player.');
           if (episode) {
             navigation.navigate('VideoPlayer', {
               item,
               episode,
-              season: progress.season,
-              episodeNumber: progress.episodeNumber,
-              resumePosition: progress.position,
+              season,
+              episodeNumber,
+              resumePosition,
+            });
+          } else {
+            navigation.navigate('VideoPlayer', {
+              item,
+              resumePosition,
             });
           }
-        })
-        .catch(error => {
-          console.error('Error fetching episode:', error);
-        });
+        }
+      } catch (error) {
+        console.error('Error fetching stream for external player:', error);
+        Alert.alert('Error', 'Failed to open external player. Using default player.');
+        if (episode) {
+          navigation.navigate('VideoPlayer', {
+            item,
+            episode,
+            season,
+            episodeNumber,
+            resumePosition,
+          });
+        } else {
+          navigation.navigate('VideoPlayer', {
+            item,
+            resumePosition,
+          });
+        }
+      }
     } else {
-      // Movie
-      navigation.navigate('VideoPlayer', {
-        item,
-        resumePosition: progress.position,
-      });
+      // Use default player
+      if (episode) {
+        navigation.navigate('VideoPlayer', {
+          item,
+          episode,
+          season,
+          episodeNumber,
+          resumePosition,
+        });
+      } else {
+        navigation.navigate('VideoPlayer', {
+          item,
+          resumePosition,
+        });
+      }
     }
   };
 
@@ -233,8 +325,10 @@ export default function HomeScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      <StatusBar barStyle="light-content" translucent={true} backgroundColor="transparent" />
       <Animated.ScrollView 
         style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         bounces={true}
         onScroll={Animated.event(
@@ -243,12 +337,14 @@ export default function HomeScreen({ navigation }) {
         )}
         scrollEventThrottle={16}
       >
-        {/* Featured Content */}
-        {loadingFeatured ? (
-          <FeaturedContentSkeleton />
-        ) : (
-          <FeaturedContent item={featuredItem} navigation={navigation} scrollY={scrollY} />
-        )}
+        {/* Featured Content - Extends to top edge */}
+        <View style={{ marginTop: -insets.top }}>
+          {loadingFeatured ? (
+            <FeaturedContentSkeleton />
+          ) : (
+            <FeaturedContent item={featuredItem} navigation={navigation} scrollY={scrollY} />
+          )}
+        </View>
 
         {/* Continue Watching Section */}
         {continueWatchingItems.length > 0 && (
@@ -313,6 +409,9 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 20,
   },
   header: {
     paddingHorizontal: 20,

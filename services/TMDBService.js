@@ -143,5 +143,31 @@ export const TMDBService = {
       return { results: [], totalPages: 1, page: 1 };
     }
   },
+
+  // Fetch videos (trailers) for movie or TV show
+  async fetchVideos(mediaType, mediaId) {
+    try {
+      const response = await fetch(
+        `${BASE_URL}/${mediaType}/${mediaId}/videos?api_key=${API_KEY}`
+      );
+      const data = await response.json();
+      return data.results || [];
+    } catch (error) {
+      console.error('Error fetching videos:', error);
+      return [];
+    }
+  },
+
+  // Get YouTube trailer URL from video key
+  getYouTubeTrailerUrl(key) {
+    if (!key) return null;
+    return `https://www.youtube.com/watch?v=${key}`;
+  },
+
+  // Get YouTube embed URL from video key
+  getYouTubeEmbedUrl(key) {
+    if (!key) return null;
+    return `https://www.youtube.com/embed/${key}`;
+  },
 };
 

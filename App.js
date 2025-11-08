@@ -17,6 +17,9 @@ import MangaDetailsScreen from './screens/MangaDetailsScreen';
 import MangaReaderScreen from './screens/MangaReaderScreen';
 import VideoPlayerScreen from './screens/VideoPlayerScreen';
 import SettingsScreen from './screens/SettingsScreen';
+import SubtitleSettingsScreen from './screens/SubtitleSettingsScreen';
+import PlayerSettingsScreen from './screens/PlayerSettingsScreen';
+import VideoSourceSettingsScreen from './screens/VideoSourceSettingsScreen';
 import DownloadsScreen from './screens/DownloadsScreen';
 import DownloadedMangaDetailsScreen from './screens/DownloadedMangaDetailsScreen';
 
@@ -54,9 +57,18 @@ function SearchStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="SearchMain" component={SearchScreen} />
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
+      <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
       <Stack.Screen 
         name="VideoPlayer" 
         component={VideoPlayerScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          animation: 'fade',
+        }}
+      />
+      <Stack.Screen 
+        name="MangaReader" 
+        component={MangaReaderScreen}
         options={{
           presentation: 'fullScreenModal',
           animation: 'fade',
@@ -71,6 +83,15 @@ function MangaStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="MangaMain" component={MangaScreen} />
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
+      <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
+      <Stack.Screen 
+        name="VideoPlayer" 
+        component={VideoPlayerScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          animation: 'fade',
+        }}
+      />
       <Stack.Screen 
         name="MangaReader" 
         component={MangaReaderScreen}
@@ -115,9 +136,28 @@ function ProfileStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="ProfileMain" component={ProfileScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
+      <Stack.Screen name="SubtitleSettings" component={SubtitleSettingsScreen} />
+      <Stack.Screen name="PlayerSettings" component={PlayerSettingsScreen} />
+      <Stack.Screen name="VideoSourceSettings" component={VideoSourceSettingsScreen} />
       <Stack.Screen name="CollectionDetails" component={CollectionDetailsScreen} />
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
+      <Stack.Screen 
+        name="VideoPlayer" 
+        component={VideoPlayerScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          animation: 'fade',
+        }}
+      />
+      <Stack.Screen 
+        name="MangaReader" 
+        component={MangaReaderScreen}
+        options={{
+          presentation: 'fullScreenModal',
+          animation: 'fade',
+        }}
+      />
     </Stack.Navigator>
   );
 }

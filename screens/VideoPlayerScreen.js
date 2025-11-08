@@ -17,6 +17,7 @@ import {
   TextInput,
   Alert,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Video, ResizeMode, Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
@@ -150,15 +151,43 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const menuModalTranslateY = useRef(new Animated.Value(20)).current;
   const menuModalDownwardTranslate = useRef(new Animated.Value(0)).current;
 
-  useEffect(() => {
-    const lockOrientation = async () => {
-      try {
-        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-      } catch (error) {
-        console.error('Error locking orientation:', error);
-      }
-    };
+  // Lock orientation to landscape when screen mounts or comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      let isLocked = false;
+      
+      const lockOrientation = async () => {
+        try {
+          // Lock to landscape - this will force rotation if device is in portrait
+          await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+          isLocked = true;
+        } catch (error) {
+          console.error('Error locking orientation:', error);
+        }
+      };
 
+      // Lock immediately
+      lockOrientation();
+
+      // Also try locking again after a short delay to ensure it takes effect
+      // This is especially important for native builds where orientation changes might be delayed
+      const timeoutId = setTimeout(() => {
+        if (!isLocked) {
+          lockOrientation();
+        }
+      }, 300);
+
+      return () => {
+        clearTimeout(timeoutId);
+        // Unlock orientation when screen loses focus to allow other screens to rotate freely
+        ScreenOrientation.unlockAsync().catch(err => {
+          console.error('Error unlocking orientation:', err);
+        });
+      };
+    }, [])
+  );
+
+  useEffect(() => {
     const setupAudio = async () => {
       try {
         // Configure audio mode for video playback
@@ -173,7 +202,6 @@ export default function VideoPlayerScreen({ route, navigation }) {
       }
     };
 
-    lockOrientation();
     setupAudio();
     fetchStreamUrl();
 
@@ -186,9 +214,6 @@ export default function VideoPlayerScreen({ route, navigation }) {
     }, 10000);
 
     return () => {
-      ScreenOrientation.unlockAsync().catch(err => {
-        console.error('Error unlocking orientation:', err);
-      });
       if (controlsTimeoutRef.current) {
         clearTimeout(controlsTimeoutRef.current);
       }
