@@ -340,6 +340,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
   }) : '';
   
   const isTVShow = !item.title && (item.name || item.media_type === 'tv');
+  const isMovie = !isTVShow;
   const seasons = (tvDetails?.seasons || []).filter(season => season.season_number > 0);
 
   // Get genres - check item.genres, tvDetails.genres, or map from genre_ids
@@ -467,6 +468,104 @@ export default function MovieDetailsScreen({ route, navigation }) {
     }
   };
   
+  // Validate if URL is a video file
+  const validateVideoUrl = async (url) => {
+    if (!url) return { isValid: false, error: 'No URL provided' };
+    
+    try {
+      // Check URL extension
+      const urlLower = url.toLowerCase();
+      const videoExtensions = ['.mp4', '.m3u8', '.mkv', '.avi', '.mov', '.webm', '.flv', '.m4v'];
+      const hasVideoExtension = videoExtensions.some(ext => urlLower.includes(ext));
+      
+      // Check if it's an m3u8 playlist (HLS stream)
+      if (urlLower.includes('.m3u8')) {
+        return { isValid: true, type: 'm3u8', url };
+      }
+      
+      // For direct video URLs, check content-type
+      if (urlLower.startsWith('http://') || urlLower.startsWith('https://')) {
+        try {
+          // Make a HEAD request to check content-type
+          const response = await fetch(url, { 
+            method: 'HEAD',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            }
+          });
+          
+          const contentType = response.headers.get('content-type') || '';
+          const contentTypeLower = contentType.toLowerCase();
+          
+          // Check if it's a video content type
+          const isVideoContentType = contentTypeLower.includes('video/') || 
+                                     contentTypeLower.includes('application/vnd.apple.mpegurl') ||
+                                     contentTypeLower.includes('application/x-mpegurl');
+          
+          // Check if it's HTML or text (bad signs)
+          const isHtmlOrText = contentTypeLower.includes('text/html') || 
+                               contentTypeLower.includes('text/plain') ||
+                               contentTypeLower.includes('application/json');
+          
+          if (isHtmlOrText) {
+            return { 
+              isValid: false, 
+              error: 'URL appears to be HTML/text, not a video file',
+              contentType 
+            };
+          }
+          
+          if (isVideoContentType || hasVideoExtension) {
+            return { 
+              isValid: true, 
+              type: 'video', 
+              url, 
+              contentType: contentType || 'unknown' 
+            };
+          }
+          
+          // If we can't determine, but has video extension, allow it
+          if (hasVideoExtension) {
+            return { 
+              isValid: true, 
+              type: 'video', 
+              url, 
+              contentType: contentType || 'unknown',
+              warning: 'Could not verify content type, but URL looks like a video'
+            };
+          }
+          
+          return { 
+            isValid: false, 
+            error: `Unknown content type: ${contentType || 'unknown'}. URL does not appear to be a video file.`,
+            contentType 
+          };
+        } catch (fetchError) {
+          // If HEAD request fails, check extension as fallback
+          console.warn('Could not verify content-type, using extension check:', fetchError);
+          if (hasVideoExtension) {
+            return { 
+              isValid: true, 
+              type: 'video', 
+              url, 
+              warning: 'Could not verify content type, but URL extension suggests it\'s a video'
+            };
+          }
+          return { 
+            isValid: false, 
+            error: 'Could not verify if URL is a video file',
+            details: fetchError.message 
+          };
+        }
+      }
+      
+      return { isValid: false, error: 'Invalid URL format' };
+    } catch (error) {
+      console.error('Error validating video URL:', error);
+      return { isValid: false, error: error.message };
+    }
+  };
+
   const handleDownload = async () => {
     if (!item || !item.id) return;
     
@@ -496,35 +595,106 @@ export default function MovieDetailsScreen({ route, navigation }) {
     }
     
     try {
+      // Show loading state
       setIsDownloading(true);
-      setDownloadProgress(0);
+      setDownloadProgress(0.1);
       
-      const result = await VideoDownloadService.downloadMovie(item, (progress) => {
-        setDownloadProgress(progress);
-      });
+      const source = await StorageService.getVideoSource();
+      const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
       
-      if (result.success) {
-        if (result.alreadyDownloaded) {
-          Alert.alert('Already Downloaded', 'This movie is already downloaded.');
-        } else {
-          Alert.alert('Download Complete', 'Movie downloaded successfully! You can now watch it offline.');
-        }
-        setIsDownloaded(true);
-        setIsDownloading(false);
-        setDownloadProgress(0);
-      } else if (result.alreadyDownloading) {
-        Alert.alert('Download in Progress', 'This movie is already being downloaded.');
-        setIsDownloading(true);
-      }
-    } catch (error) {
-      console.error('Error downloading movie:', error);
-      Alert.alert(
-        'Download Failed',
-        error.message || 'Failed to download movie. Please try again.',
-        [{ text: 'OK' }]
-      );
+      const result = await service.fetchMovieWithSubtitles(item.id);
+      
       setIsDownloading(false);
       setDownloadProgress(0);
+      
+      if (!result || !result.streamUrl) {
+        Alert.alert(
+          'Error',
+          'Could not fetch video stream URL. Please try again later.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
+      const streamUrl = result.streamUrl;
+      
+      // Validate the URL
+      const validation = await validateVideoUrl(streamUrl);
+      
+      if (!validation.isValid) {
+        Alert.alert(
+          'Invalid Video URL',
+          `The stream URL does not appear to be a valid video file:\n\n${validation.error}${validation.details ? '\n\nDetails: ' + validation.details : ''}\n\nURL: ${streamUrl.substring(0, 100)}${streamUrl.length > 100 ? '...' : ''}`,
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
+      // Show confirmation dialog with URL (truncated for display)
+      const urlDisplay = streamUrl.length > 120 
+        ? streamUrl.substring(0, 120) + '...' 
+        : streamUrl;
+      
+      const contentTypeDisplay = validation.contentType || 'Not verified';
+      const warningText = validation.warning ? `\n\n⚠️ Warning: ${validation.warning}` : '';
+      
+      Alert.alert(
+        'Confirm Download',
+        `Download video from this URL?${warningText}\n\nURL:\n${urlDisplay}\n\nContent Type: ${contentTypeDisplay}\n\nDo you want to proceed with the download?`,
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+          },
+          {
+            text: 'Download',
+            onPress: async () => {
+              // Proceed with download
+              try {
+                setIsDownloading(true);
+                setDownloadProgress(0);
+                
+                const downloadResult = await VideoDownloadService.downloadMovie(item, (progress) => {
+                  setDownloadProgress(progress);
+                });
+                
+                if (downloadResult.success) {
+                  if (downloadResult.alreadyDownloaded) {
+                    Alert.alert('Already Downloaded', 'This movie is already downloaded.');
+                  } else {
+                    Alert.alert(
+                      'Download Complete', 
+                      'Movie downloaded successfully! You can now watch it offline. You can find it in the Downloads section.',
+                      [{ text: 'OK' }]
+                    );
+                  }
+                  await checkDownloadStatus(); // Refresh download status
+                } else if (downloadResult.alreadyDownloading) {
+                  Alert.alert('Download in Progress', 'This movie is already being downloaded.');
+                  await checkDownloadStatus(); // Refresh download status
+                }
+              } catch (error) {
+                console.error('Error downloading movie:', error);
+                Alert.alert(
+                  'Download Failed',
+                  error.message || 'Failed to download movie. Please try again.',
+                  [{ text: 'OK' }]
+                );
+                await checkDownloadStatus(); // Refresh download status in case of error
+              }
+            },
+          },
+        ]
+      );
+    } catch (error) {
+      console.error('Error fetching stream URL:', error);
+      setIsDownloading(false);
+      setDownloadProgress(0);
+      Alert.alert(
+        'Error',
+        `Failed to fetch video stream URL: ${error.message || 'Unknown error'}`,
+        [{ text: 'OK' }]
+      );
     }
   };
 
@@ -846,7 +1016,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
             </TouchableOpacity>
 
             {/* Download Button - Only show for movies */}
-            {item.title || (item.media_type === 'movie') ? (
+            {isMovie ? (
               <TouchableOpacity
                 style={[
                   styles.downloadButton,

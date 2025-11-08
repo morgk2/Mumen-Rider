@@ -201,14 +201,31 @@ export const VideoDownloadService = {
           videoSavePath,
           {},
           (downloadProgress) => {
-            const progress = downloadProgress.totalBytesWritten / downloadProgress.totalBytesExpectedToWrite;
+            // Handle cases where totalBytesExpectedToWrite might be 0, undefined, or invalid
+            let progress = 0;
+            const totalBytes = downloadProgress.totalBytesExpectedToWrite || 0;
+            const writtenBytes = downloadProgress.totalBytesWritten || 0;
+            
+            if (totalBytes > 0) {
+              progress = Math.min(1, Math.max(0, writtenBytes / totalBytes));
+            } else if (writtenBytes > 0) {
+              // If we don't know the total size, we can't calculate exact progress
+              // Just show that we're downloading (keep at 30-90% range)
+              console.log(`Video download progress: ${writtenBytes} bytes downloaded (total size unknown)`);
+              // Return current progress without updating to avoid invalid percentages
+              return downloadInfo.progress || 0.3;
+            }
+            
             // Update progress: 30% (stream fetch) + 60% (video download)
             const totalProgress = 0.3 + (0.6 * progress);
             downloadInfo.progress = totalProgress;
             if (onProgress) {
               onProgress(totalProgress);
             }
-            console.log(`Video download progress: ${(progress * 100).toFixed(0)}%`);
+            const progressPercent = totalBytes > 0 
+              ? `${(progress * 100).toFixed(0)}% (${writtenBytes}/${totalBytes} bytes)`
+              : `${writtenBytes} bytes downloaded`;
+            console.log(`Video download progress: ${progressPercent}`);
             return progress;
           }
         );
@@ -220,8 +237,87 @@ export const VideoDownloadService = {
         }
         
         console.log('Video downloaded successfully to:', downloadResult.uri);
+        downloadInfo.progress = 0.85;
+        if (onProgress) onProgress(0.85);
+        
+        // Validate downloaded file is actually a video file
+        downloadInfo.status = 'validating_file';
         downloadInfo.progress = 0.9;
         if (onProgress) onProgress(0.9);
+        
+        try {
+          const fileInfo = await FileSystem.getInfoAsync(downloadResult.uri);
+          if (!fileInfo.exists) {
+            throw new Error('Downloaded file does not exist');
+          }
+          
+          // Check file extension first
+          const uriLower = downloadResult.uri.toLowerCase();
+          const videoExtensions = ['.mp4', '.m3u8', '.mkv', '.avi', '.mov', '.webm', '.flv', '.m4v'];
+          const hasVideoExtension = videoExtensions.some(ext => uriLower.includes(ext));
+          
+          // Check file size (video files should be reasonably large)
+          // For m3u8 playlists, they can be small, so we only check for MP4 and other direct video files
+          const isM3U8 = uriLower.includes('.m3u8') || videoSavePath.includes('.m3u8');
+          
+          if (!isM3U8 && fileInfo.size && fileInfo.size < 100 * 1024) {
+            // File is very small (less than 100KB), likely not a video
+            // This could be an error page or HTML
+            console.warn('Downloaded file is very small:', fileInfo.size, 'bytes. Might not be a video file.');
+            // For very small files, try to check if it's text/HTML
+            try {
+              // Try to read as string to check for HTML
+              const fileContent = await FileSystem.readAsStringAsync(downloadResult.uri);
+              
+              // Check if fileContent is valid
+              if (fileContent && typeof fileContent === 'string' && fileContent.length > 0) {
+                const firstChunk = fileContent.substring(0, Math.min(500, fileContent.length)).toLowerCase();
+                
+                // Check if it's HTML or error message
+                if (firstChunk.includes('<!doctype') || 
+                    firstChunk.includes('<html') ||
+                    firstChunk.includes('<!doctype html') ||
+                    (firstChunk.includes('error') && (firstChunk.includes('not found') || firstChunk.includes('404')))) {
+                  // Delete the invalid file
+                  await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true });
+                  throw new Error('Downloaded file appears to be HTML/text/error page, not a video file. The stream URL may be invalid.');
+                }
+              } else {
+                // Couldn't read as text, which is good for binary video files
+                console.log('File could not be read as text (likely binary/video file)');
+              }
+            } catch (readError) {
+              // If we can't read it as text (likely binary), that's actually good for video files
+              // But if file is very small and we can't read it, it might still be an issue
+              if (fileInfo.size && fileInfo.size < 10 * 1024) {
+                // File is extremely small, likely an error
+                await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true });
+                throw new Error('Downloaded file is too small to be a valid video file. The stream URL may be invalid.');
+              }
+              console.log('File appears to be binary (good sign for video file)');
+            }
+          } else if (isM3U8) {
+            // For m3u8 playlists, they can be small text files, so we just verify they exist
+            console.log('M3U8 playlist downloaded, size:', fileInfo.size, 'bytes');
+          } else {
+            console.log('Video file validation: File size looks reasonable:', fileInfo.size, 'bytes');
+          }
+          
+          if (!hasVideoExtension && !uriLower.includes('video.m3u8') && !uriLower.includes('video.mp4')) {
+            console.warn('Downloaded file does not have a video extension, but proceeding anyway');
+          }
+          
+          console.log('File validation passed. File size:', fileInfo.size, 'bytes');
+        } catch (validationError) {
+          console.error('File validation error:', validationError);
+          // Delete the invalid file
+          try {
+            await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true });
+          } catch (deleteError) {
+            console.error('Error deleting invalid file:', deleteError);
+          }
+          throw validationError;
+        }
       } catch (error) {
         console.error('Error downloading video:', error);
         throw new Error(`Video download failed: ${error.message}`);

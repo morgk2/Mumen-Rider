@@ -268,8 +268,20 @@ export default function DownloadsScreen({ navigation }) {
                 key={`movie_${movie.mediaId}`}
                 video={movie}
                 onPress={(movie) => {
-                  // Navigate to movie details or player
-                  console.log('Movie pressed:', movie);
+                  // Navigate to movie details
+                  if (navigation) {
+                    navigation.navigate('MovieDetails', { 
+                      item: {
+                        id: movie.mediaId,
+                        title: movie.title,
+                        poster_path: movie.posterPath,
+                        backdrop_path: movie.backdropPath,
+                        overview: movie.overview,
+                        release_date: movie.releaseDate,
+                        media_type: 'movie',
+                      }
+                    });
+                  }
                 }}
                 onDelete={async (movie) => {
                   Alert.alert(

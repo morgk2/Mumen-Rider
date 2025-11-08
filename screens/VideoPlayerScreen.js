@@ -28,6 +28,8 @@ import { N3tflixService } from '../services/N3tflixService';
 import { OpenSubtitlesService, LANGUAGE_CODES } from '../services/OpenSubtitlesService';
 import { WatchProgressService } from '../services/WatchProgressService';
 import { StorageService } from '../services/StorageService';
+import { VideoDownloadService } from '../services/VideoDownloadService';
+import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const SUBTITLE_SETTINGS_KEY = '@subtitle_settings';
@@ -558,33 +560,75 @@ export default function VideoPlayerScreen({ route, navigation }) {
         return;
       }
 
-      // Get the selected video source
-      const source = await StorageService.getVideoSource();
-      setVideoSource(source);
-
-      // Select the appropriate service
-      const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
-
       const tmdbId = item.id;
-      let result = null;
+      let localVideoPath = null;
+      let downloadedData = null;
 
+      // Check if video is downloaded
       if (episode && season && episodeNumber) {
-        result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber);
+        // Check for downloaded episode
+        downloadedData = await VideoDownloadService.getEpisodeDownload(tmdbId, season, episodeNumber);
+        if (downloadedData && downloadedData.completed && downloadedData.videoPath) {
+          // Verify file exists
+          const fileInfo = await FileSystem.getInfoAsync(downloadedData.videoPath);
+          if (fileInfo.exists) {
+            localVideoPath = downloadedData.videoPath;
+          }
+        }
       } else {
-        result = await service.fetchMovieWithSubtitles(tmdbId);
+        // Check for downloaded movie
+        downloadedData = await VideoDownloadService.getMovieDownload(tmdbId);
+        if (downloadedData && downloadedData.completed && downloadedData.videoPath) {
+          // Verify file exists
+          const fileInfo = await FileSystem.getInfoAsync(downloadedData.videoPath);
+          if (fileInfo.exists) {
+            localVideoPath = downloadedData.videoPath;
+          }
+        }
       }
 
-      if (result && result.streamUrl) {
-        setStreamUrl(result.streamUrl);
+      if (localVideoPath) {
+        // Use downloaded video
+        console.log('Using downloaded video:', localVideoPath);
+        setStreamUrl(localVideoPath);
         
-        // Set up subtitle tracks
+        // Set up subtitle tracks from downloaded data if available
         const tracks = [
           { id: 'none', name: 'Off', language: null, url: null },
-          ...result.subtitles,
         ];
+        if (downloadedData && downloadedData.subtitles && downloadedData.subtitles.length > 0) {
+          tracks.push(...downloadedData.subtitles);
+        }
         setSubtitleTracks(tracks);
       } else {
-        setError('Could not extract video stream URL.');
+        // Fetch from streaming service
+        // Get the selected video source
+        const source = await StorageService.getVideoSource();
+        setVideoSource(source);
+
+        // Select the appropriate service
+        const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+
+        let result = null;
+
+        if (episode && season && episodeNumber) {
+          result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber);
+        } else {
+          result = await service.fetchMovieWithSubtitles(tmdbId);
+        }
+
+        if (result && result.streamUrl) {
+          setStreamUrl(result.streamUrl);
+          
+          // Set up subtitle tracks
+          const tracks = [
+            { id: 'none', name: 'Off', language: null, url: null },
+            ...result.subtitles,
+          ];
+          setSubtitleTracks(tracks);
+        } else {
+          setError('Could not extract video stream URL.');
+        }
       }
     } catch (err) {
       console.error('Error fetching stream:', err);
