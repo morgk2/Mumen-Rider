@@ -158,7 +158,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [isSliderActive, setIsSliderActive] = useState(false);
   const [sliderWidth, setSliderWidth] = useState(0);
   const sliderProgress = useRef(new Animated.Value(0)).current;
-  const sliderHeight = useRef(new Animated.Value(24)).current;
+  const sliderHeight = useRef(new Animated.Value(40)).current;
   const [centerControlsWidth, setCenterControlsWidth] = useState(0);
   const [centerControlsHeight, setCenterControlsHeight] = useState(0);
   const [volumeBarWidth, setVolumeBarWidth] = useState(0);
@@ -286,7 +286,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   // Animate slider height when active
   useEffect(() => {
     Animated.spring(sliderHeight, {
-      toValue: isSliderActive ? 30 : 24,
+      toValue: isSliderActive ? 48 : 40,
       useNativeDriver: false,
       tension: 50,
       friction: 7,
@@ -1436,14 +1436,14 @@ export default function VideoPlayerScreen({ route, navigation }) {
                       </BlurView>
                     </TouchableOpacity>
                     
-                    {episodeInfo && (
-                      <View style={styles.titleContainer}>
+                    <View style={styles.titleContainer}>
+                      {episodeInfo && (
                         <Text style={styles.episodeNumber}>{episodeInfo}</Text>
-                        <Text style={styles.titleText} numberOfLines={1}>
-                          {item?.title || item?.name || 'Video'}
-                        </Text>
-                      </View>
-                    )}
+                      )}
+                      <Text style={styles.titleText} numberOfLines={1}>
+                        {item?.title || item?.name || 'Video'}
+                      </Text>
+                    </View>
                   </View>
 
                   <View style={styles.topRight}>
@@ -1910,8 +1910,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
                           {
                             height: sliderHeight,
                             borderRadius: sliderHeight.interpolate({
-                              inputRange: [24, 30],
-                              outputRange: [12, 15],
+                              inputRange: [40, 48],
+                              outputRange: [20, 24],
                             }),
                           },
                         ]}
@@ -2221,13 +2221,13 @@ const styles = StyleSheet.create({
   },
   sliderWrapper: {
     flex: 1,
-    height: 40,
+    height: 56,
     justifyContent: 'center',
     paddingVertical: 18, // Extra touch area
   },
   sliderTrack: {
     width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
     overflow: 'hidden',
   },
   sliderFill: {
