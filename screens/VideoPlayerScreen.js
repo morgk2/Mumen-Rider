@@ -22,13 +22,17 @@ import { Video, ResizeMode, Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import * as NavigationBar from 'expo-navigation-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VixsrcService } from '../services/VixsrcService';
 import { N3tflixService } from '../services/N3tflixService';
+import { VidfastService } from '../services/VidfastService';
 import { OpenSubtitlesService, LANGUAGE_CODES } from '../services/OpenSubtitlesService';
 import { WatchProgressService } from '../services/WatchProgressService';
 import { StorageService } from '../services/StorageService';
 import { VideoDownloadService } from '../services/VideoDownloadService';
+import { TMDBService } from '../services/TMDBService';
+import { CachedImage } from '../components/CachedImage';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -46,8 +50,10 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [isPlaying, setIsPlaying] = useState(true);
   const [position, setPosition] = useState(resumePosition || 0);
   const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(new Date());
   const progressSaveIntervalRef = useRef(null);
   const hasSeekedToResumePosition = useRef(false);
+  const hasAutoPlayed = useRef(false);
   const positionRef = useRef(resumePosition || 0);
   const durationRef = useRef(0);
   const [showControls, setShowControls] = useState(true);
@@ -69,6 +75,30 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [isSearchingSubtitles, setIsSearchingSubtitles] = useState(false);
   const subtitleCuesRef = useRef([]);
   
+  // Zoom states - using Animated.Value for smooth animations
+  const zoomScale = useRef(new Animated.Value(1)).current;
+  const panOffsetX = useRef(new Animated.Value(0)).current;
+  const panOffsetY = useRef(new Animated.Value(0)).current;
+  const zoomScaleState = useRef(1);
+  const panOffsetXState = useRef(0);
+  const panOffsetYState = useRef(0);
+  
+  // Pinch gesture state
+  const lastPinchDistance = useRef(0);
+  const lastPinchCenter = useRef({ x: 0, y: 0 });
+  const pinchStartScale = useRef(1);
+  const pinchStartPan = useRef({ x: 0, y: 0 });
+  const isPinching = useRef(false);
+  
+  // Pan gesture state (single finger when zoomed)
+  const isPanning = useRef(false);
+  const panStartOffset = useRef({ x: 0, y: 0 });
+  const lastPanPosition = useRef({ x: 0, y: 0 });
+  
+  // Double tap state
+  const lastTapTime = useRef(0);
+  const tapTimeout = useRef(null);
+  
   // Subtitle customization states (loaded from settings)
   const [subtitleColor, setSubtitleColor] = useState('#ffffff');
   const [subtitleSize, setSubtitleSize] = useState(18);
@@ -80,12 +110,195 @@ export default function VideoPlayerScreen({ route, navigation }) {
   
   // Video source state
   const [videoSource, setVideoSource] = useState('vixsrc');
+  
+  // Server selection state (for Vidfast)
+  const [availableServers, setAvailableServers] = useState([]);
+  const [currentServer, setCurrentServer] = useState(null);
+  const [isServerExpanded, setIsServerExpanded] = useState(false);
+  
+  // Orientation state
+  const [isLandscape, setIsLandscape] = useState(true);
+  
+  // Battery state
+  const [batteryLevel, setBatteryLevel] = useState(null);
+  const [isCharging, setIsCharging] = useState(false);
+
+  // Logo state (for movies)
+  const [logoUrl, setLogoUrl] = useState(null);
+
+  // Next episode state
+  const [nextEpisode, setNextEpisode] = useState(null);
+  const [showNextEpisodeButton, setShowNextEpisodeButton] = useState(false);
 
   // Load subtitle settings and video source on mount
   useEffect(() => {
     loadSubtitleSettings();
     loadVideoSource();
+    loadBatteryLevel();
+    fetchLogo();
+    if (episode && season && episodeNumber) {
+      fetchNextEpisode();
+    }
   }, []);
+
+  // Fetch logo when item changes
+  useEffect(() => {
+    fetchLogo();
+  }, [item]);
+
+  // Fetch next episode information
+  const fetchNextEpisode = async () => {
+    if (!item || !item.id || !episode || season === null || episodeNumber === null) {
+      return;
+    }
+
+    try {
+      // Fetch all episodes for the current season
+      const episodesData = await TMDBService.fetchTVEpisodes(item.id, season);
+      
+      // Find the current episode index
+      const currentIndex = episodesData.findIndex(ep => ep.episode_number === episodeNumber);
+      
+      if (currentIndex !== -1 && currentIndex < episodesData.length - 1) {
+        // Next episode in the same season
+        const nextEp = episodesData[currentIndex + 1];
+        setNextEpisode({
+          episode: nextEp,
+          season: season,
+          episodeNumber: nextEp.episode_number,
+        });
+      } else {
+        // Check if there's a next season
+        try {
+          const tvDetails = await TMDBService.fetchTVDetails(item.id);
+          const seasons = (tvDetails?.seasons || []).filter(s => s.season_number > 0);
+          const currentSeasonIndex = seasons.findIndex(s => s.season_number === season);
+          
+          if (currentSeasonIndex !== -1 && currentSeasonIndex < seasons.length - 1) {
+            // Next season exists, fetch first episode of next season
+            const nextSeason = seasons[currentSeasonIndex + 1];
+            const nextSeasonEpisodes = await TMDBService.fetchTVEpisodes(item.id, nextSeason.season_number);
+            if (nextSeasonEpisodes.length > 0) {
+              const firstEpisode = nextSeasonEpisodes[0];
+              setNextEpisode({
+                episode: firstEpisode,
+                season: nextSeason.season_number,
+                episodeNumber: firstEpisode.episode_number,
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching next season:', error);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching next episode:', error);
+    }
+  };
+
+  // Play next episode
+  const playNextEpisode = async () => {
+    if (!nextEpisode || !item) return;
+
+    try {
+      const externalPlayer = await StorageService.getExternalPlayer();
+      
+      // Navigate to next episode
+      navigation.replace('VideoPlayer', {
+        item,
+        episode: nextEpisode.episode,
+        season: nextEpisode.season,
+        episodeNumber: nextEpisode.episodeNumber,
+        resumePosition: null, // Start from beginning
+      });
+    } catch (error) {
+      console.error('Error playing next episode:', error);
+    }
+  };
+
+  // Fetch TMDB logo for movies
+  const fetchLogo = async () => {
+    if (!item) {
+      setLogoUrl(null);
+      return;
+    }
+    
+    // Only fetch logo for movies, not TV shows
+    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+    if (mediaType !== 'movie') {
+      setLogoUrl(null);
+      return;
+    }
+    
+    try {
+      const itemId = item.id;
+      const response = await fetch(
+        `https://api.themoviedb.org/3/${mediaType}/${itemId}/images?api_key=738b4edd0a156cc126dc4a4b8aea4aca`
+      );
+      const data = await response.json();
+      
+      // Find English logo, or use the first one
+      const logo = data.logos?.find(logo => logo.iso_639_1 === 'en') || data.logos?.[0];
+      
+      if (logo) {
+        const logoPath = logo.file_path;
+        const logoUrl = `https://image.tmdb.org/t/p/w500${logoPath}`;
+        setLogoUrl(logoUrl);
+      } else {
+        setLogoUrl(null);
+      }
+    } catch (error) {
+      console.error('Error fetching logo:', error);
+      setLogoUrl(null);
+    }
+  };
+
+  // Load battery level
+  const loadBatteryLevel = async () => {
+    try {
+      if (Platform.OS === 'web') {
+        // Use Web Battery API if available
+        if ('getBattery' in navigator) {
+          const battery = await navigator.getBattery();
+          setBatteryLevel(Math.round(battery.level * 100));
+          setIsCharging(battery.charging);
+          
+          // Listen for battery level changes
+          battery.addEventListener('levelchange', () => {
+            setBatteryLevel(Math.round(battery.level * 100));
+          });
+          
+          // Listen for charging changes
+          battery.addEventListener('chargingchange', () => {
+            setIsCharging(battery.charging);
+          });
+        }
+      } else {
+        // Try to use expo-battery if available (will fail gracefully if not installed)
+        try {
+          const Battery = require('expo-battery');
+          const batteryLevel = await Battery.getBatteryLevelAsync();
+          const batteryState = await Battery.getBatteryStateAsync();
+          setBatteryLevel(Math.round(batteryLevel * 100));
+          setIsCharging(batteryState === Battery.BatteryState.CHARGING);
+          
+          // Listen for battery level changes
+          Battery.addBatteryLevelListener(({ batteryLevel: level }) => {
+            setBatteryLevel(Math.round(level * 100));
+          });
+          
+          // Listen for battery state changes
+          Battery.addBatteryStateListener(({ batteryState: state }) => {
+            setIsCharging(state === Battery.BatteryState.CHARGING);
+          });
+        } catch (error) {
+          // expo-battery not available, battery will show as null
+        }
+      }
+    } catch (error) {
+      // Battery API not available, will show as null
+    }
+  };
 
   const loadVideoSource = async () => {
     try {
@@ -129,7 +342,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [isSliderActive, setIsSliderActive] = useState(false);
   const [sliderWidth, setSliderWidth] = useState(0);
   const sliderProgress = useRef(new Animated.Value(0)).current;
-  const sliderHeight = useRef(new Animated.Value(24)).current;
+  const sliderHeight = useRef(new Animated.Value(35)).current;
   const [centerControlsWidth, setCenterControlsWidth] = useState(0);
   const [centerControlsHeight, setCenterControlsHeight] = useState(0);
   const [volumeBarWidth, setVolumeBarWidth] = useState(0);
@@ -152,24 +365,59 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const menuModalOpacity = useRef(new Animated.Value(0)).current;
   const menuModalTranslateY = useRef(new Animated.Value(20)).current;
   const menuModalDownwardTranslate = useRef(new Animated.Value(0)).current;
+  
+  // Animation values for server modal
+  const serverModalOpacity = useRef(new Animated.Value(0)).current;
+  const serverModalTranslateY = useRef(new Animated.Value(20)).current;
+  
 
-  // Lock orientation to landscape when screen mounts or comes into focus
+  // Lock orientation when screen mounts or comes into focus
   useFocusEffect(
     React.useCallback(() => {
+      // Skip orientation locking on web as it's not well supported
+      if (Platform.OS === 'web') {
+        return;
+      }
+
       let isLocked = false;
       
       const lockOrientation = async () => {
         try {
-          // Lock to landscape - this will force rotation if device is in portrait
-          await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+          // Lock to current orientation preference
+          const orientation = isLandscape 
+            ? ScreenOrientation.OrientationLock.LANDSCAPE
+            : ScreenOrientation.OrientationLock.PORTRAIT_UP;
+          await ScreenOrientation.lockAsync(orientation);
           isLocked = true;
         } catch (error) {
-          console.error('Error locking orientation:', error);
+          // Silently fail - some devices don't support all orientations
+          // Fall back to landscape if portrait is not supported
+          if (!isLandscape) {
+            try {
+              await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+              setIsLandscape(true);
+              isLocked = true;
+            } catch (fallbackError) {
+              // Ignore fallback error
+            }
+          }
+        }
+      };
+
+      // Hide navigation bar (iOS home indicator) when video player is active
+      const hideNavigationBar = async () => {
+        try {
+          if (Platform.OS === 'ios' || Platform.OS === 'android') {
+            await NavigationBar.setVisibilityAsync('hidden');
+          }
+        } catch (error) {
+          // Silently fail if navigation bar API is not available
         }
       };
 
       // Lock immediately
       lockOrientation();
+      hideNavigationBar();
 
       // Also try locking again after a short delay to ensure it takes effect
       // This is especially important for native builds where orientation changes might be delayed
@@ -177,17 +425,38 @@ export default function VideoPlayerScreen({ route, navigation }) {
         if (!isLocked) {
           lockOrientation();
         }
+        hideNavigationBar();
       }, 300);
 
       return () => {
         clearTimeout(timeoutId);
         // Unlock orientation when screen loses focus to allow other screens to rotate freely
         ScreenOrientation.unlockAsync().catch(err => {
-          console.error('Error unlocking orientation:', err);
+          // Silently fail on unlock
+        });
+        // Show navigation bar again when leaving video player
+        NavigationBar.setVisibilityAsync('visible').catch(err => {
+          // Silently fail if navigation bar API is not available
         });
       };
-    }, [])
+    }, [isLandscape])
   );
+
+  // Update current time every minute
+  useEffect(() => {
+    const updateTime = () => {
+      setCurrentTime(new Date());
+    };
+    
+    // Update immediately
+    updateTime();
+    
+    // Update every minute
+    const interval = setInterval(updateTime, 60000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
 
   useEffect(() => {
     const setupAudio = async () => {
@@ -227,6 +496,57 @@ export default function VideoPlayerScreen({ route, navigation }) {
     };
   }, []);
 
+  // Reset auto-play flag when streamUrl changes
+  useEffect(() => {
+    hasAutoPlayed.current = false;
+  }, [streamUrl]);
+
+  // Auto-play when streamUrl is set (immediately after URL extraction)
+  useEffect(() => {
+    if (streamUrl) {
+      const autoPlay = async () => {
+        // Try multiple times with increasing delays to ensure video starts
+        const attempts = [200, 500, 1000, 2000, 3000];
+        
+        for (const delay of attempts) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          
+          if (videoRef.current) {
+            try {
+              const status = await videoRef.current.getStatusAsync();
+              
+              if (status.isLoaded && !status.isPlaying) {
+                console.log(`Attempting to play video (${delay}ms delay)`);
+                await videoRef.current.setVolumeAsync(volume);
+                await videoRef.current.setIsMutedAsync(isMuted);
+                await videoRef.current.playAsync();
+                setIsPlaying(true);
+                
+                // Verify it started playing
+                await new Promise(resolve => setTimeout(resolve, 300));
+                const newStatus = await videoRef.current.getStatusAsync();
+                if (newStatus.isPlaying) {
+                  hasAutoPlayed.current = true;
+                  console.log('Video auto-played successfully');
+                  break; // Success, exit loop
+                }
+              } else if (status.isPlaying) {
+                hasAutoPlayed.current = true;
+                console.log('Video already playing');
+                break;
+              }
+            } catch (error) {
+              console.error(`Error auto-playing video (attempt ${delay}ms):`, error);
+              // Continue to next attempt
+            }
+          }
+        }
+      };
+      
+      autoPlay();
+    }
+  }, [streamUrl, volume, isMuted]);
+
   // Update slider progress when position changes
   useEffect(() => {
     if (!isSliderActive && duration > 0) {
@@ -243,7 +563,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   // Animate slider height when active
   useEffect(() => {
     Animated.spring(sliderHeight, {
-      toValue: isSliderActive ? 30 : 24,
+      toValue: isSliderActive ? 39 : 35,
       useNativeDriver: false,
       tension: 50,
       friction: 7,
@@ -281,7 +601,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   // Disable controls auto-hide when any modal is active
   useEffect(() => {
-    const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode;
+    const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode || isServerExpanded;
     
     if (hasActiveModal) {
       // Clear any existing timer when modal opens
@@ -299,7 +619,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
         startControlsTimer();
       }
     }
-  }, [isSubtitleExpanded, isMenuExpanded, isSubtitleSearchMode, showControls, isControlsLocked]);
+  }, [isSubtitleExpanded, isMenuExpanded, isSubtitleSearchMode, isServerExpanded, showControls, isControlsLocked]);
 
   // Animate subtitle modal appearance/disappearance
   useEffect(() => {
@@ -335,6 +655,41 @@ export default function VideoPlayerScreen({ route, navigation }) {
       ]).start();
     }
   }, [isSubtitleExpanded]);
+
+  // Animate server modal appearance/disappearance
+  useEffect(() => {
+    const duration = 200; // Fast but smooth
+    
+    if (isServerExpanded) {
+      // Slide up and fade in
+      Animated.parallel([
+        Animated.timing(serverModalOpacity, {
+          toValue: 1,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.timing(serverModalTranslateY, {
+          toValue: 0,
+          duration,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      // Slide down and fade out
+      Animated.parallel([
+        Animated.timing(serverModalOpacity, {
+          toValue: 0,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.timing(serverModalTranslateY, {
+          toValue: 20,
+          duration,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [isServerExpanded]);
 
   // Animate menu modal appearance/disappearance and size changes
   useEffect(() => {
@@ -496,7 +851,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
       clearTimeout(controlsTimeoutRef.current);
     }
     // Don't auto-hide controls if any modal is active
-    const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode;
+    const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode || isServerExpanded;
     if (!isControlsLocked && showControls && !hasActiveModal) {
       controlsTimeoutRef.current = setTimeout(() => {
         setShowControls(false);
@@ -508,7 +863,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
     if (!isControlsLocked) {
       setShowControls(true);
       // Don't start timer if any modal is active
-      const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode;
+      const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode || isServerExpanded;
       if (!hasActiveModal) {
       startControlsTimer();
       }
@@ -549,7 +904,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
     navigation.goBack();
   };
 
-  const fetchStreamUrl = async () => {
+  const fetchStreamUrl = async (selectedServerName = null) => {
     try {
       setLoading(true);
       setError(null);
@@ -607,14 +962,14 @@ export default function VideoPlayerScreen({ route, navigation }) {
         setVideoSource(source);
 
         // Select the appropriate service
-        const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+        const service = source === 'n3tflix' ? N3tflixService : source === 'vidfast' ? VidfastService : VixsrcService;
 
         let result = null;
 
         if (episode && season && episodeNumber) {
-          result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber);
+          result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
         } else {
-          result = await service.fetchMovieWithSubtitles(tmdbId);
+          result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
         }
 
         if (result && result.streamUrl) {
@@ -626,6 +981,12 @@ export default function VideoPlayerScreen({ route, navigation }) {
             ...result.subtitles,
           ];
           setSubtitleTracks(tracks);
+          
+          // Store server list and current server for Vidfast
+          if (source === 'vidfast' && result.serverList) {
+            setAvailableServers(result.serverList);
+            setCurrentServer(result.currentServer);
+          }
         } else {
           setError('Could not extract video stream URL.');
         }
@@ -633,9 +994,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
     } catch (err) {
       console.error('Error fetching stream:', err);
       setError('Failed to load video');
-    } finally {
       setLoading(false);
     }
+    // Don't set loading to false here - wait until video reaches 00:00:01
   };
 
   // Load subtitle file and parse it
@@ -710,6 +1071,12 @@ export default function VideoPlayerScreen({ route, navigation }) {
       setDuration(newDuration);
       setIsPlaying(status.isPlaying || false);
 
+      // Hide loading screen only when video has reached at least 1 second (00:00:01)
+      // This ensures the video has actually started playing before hiding the backdrop
+      if (loading && newPosition >= 1000) {
+        setLoading(false);
+      }
+
       // Seek to resume position when video first loads
       if (resumePosition && resumePosition > 0 && !hasSeekedToResumePosition.current && newDuration > 0) {
         hasSeekedToResumePosition.current = true;
@@ -717,6 +1084,21 @@ export default function VideoPlayerScreen({ route, navigation }) {
           await videoRef.current.setPositionAsync(resumePosition);
           setPosition(resumePosition);
           positionRef.current = resumePosition;
+          // If resuming to a position > 1 second, hide loading immediately
+          if (resumePosition >= 1000) {
+            setLoading(false);
+          }
+        }
+      }
+
+      // Check if episode is in the last 4 minutes and show next episode button
+      if (episode && season !== null && episodeNumber !== null && newDuration > 0) {
+        const timeRemaining = newDuration - newPosition;
+        const fourMinutesInMs = 4 * 60 * 1000; // 4 minutes in milliseconds
+        if (timeRemaining <= fourMinutesInMs && nextEpisode) {
+          setShowNextEpisodeButton(true);
+        } else {
+          setShowNextEpisodeButton(false);
         }
       }
     }
@@ -844,6 +1226,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
       if (isMenuExpanded) {
         setIsMenuExpanded(false);
       }
+      if (isServerExpanded) {
+        setIsServerExpanded(false);
+      }
     }
     
     // Animate width expansion - calculated to fit all 5 speed options
@@ -862,6 +1247,20 @@ export default function VideoPlayerScreen({ route, navigation }) {
     if (isMenuExpanded) {
       setIsMenuExpanded(false);
     }
+    if (isServerExpanded) {
+      setIsServerExpanded(false);
+    }
+  };
+
+  const toggleServerMenu = () => {
+    resetControlsTimer();
+    setIsServerExpanded(!isServerExpanded);
+    if (isSubtitleExpanded) {
+      setIsSubtitleExpanded(false);
+    }
+    if (isMenuExpanded) {
+      setIsMenuExpanded(false);
+    }
   };
 
   const toggleMenu = () => {
@@ -870,6 +1269,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
     setIsMenuExpanded(newExpanded);
     if (isSubtitleExpanded) {
       setIsSubtitleExpanded(false);
+    }
+    if (isServerExpanded) {
+      setIsServerExpanded(false);
     }
     // Reset subtitle search mode when closing menu
     if (!newExpanded && isSubtitleSearchMode) {
@@ -1121,6 +1523,35 @@ export default function VideoPlayerScreen({ route, navigation }) {
     }).start();
   };
 
+  const toggleOrientation = async () => {
+    // Skip on web as orientation locking is not well supported
+    if (Platform.OS === 'web') {
+      return;
+    }
+
+    resetControlsTimer();
+    const newIsLandscape = !isLandscape;
+    
+    try {
+      const orientation = newIsLandscape 
+        ? ScreenOrientation.OrientationLock.LANDSCAPE
+        : ScreenOrientation.OrientationLock.PORTRAIT_UP;
+      await ScreenOrientation.lockAsync(orientation);
+      setIsLandscape(newIsLandscape);
+    } catch (error) {
+      // If portrait is not supported, keep landscape mode
+      if (!newIsLandscape) {
+        // Portrait not supported, revert to landscape
+        try {
+          await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+          setIsLandscape(true);
+        } catch (fallbackError) {
+          // Ignore fallback error
+        }
+      }
+    }
+  };
+
   const toggleMute = async () => {
     resetControlsTimer();
     const newMuted = !isMuted;
@@ -1176,6 +1607,243 @@ export default function VideoPlayerScreen({ route, navigation }) {
     })
   ).current;
 
+  // Calculate distance between two touches
+  const getDistance = (touches) => {
+    if (touches.length < 2) return 0;
+    const [touch1, touch2] = touches;
+    const dx = touch2.pageX - touch1.pageX;
+    const dy = touch2.pageY - touch1.pageY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  // Get center point between two touches
+  const getPinchCenter = (touches) => {
+    if (touches.length < 2) return { x: 0, y: 0 };
+    const [touch1, touch2] = touches;
+    return {
+      x: (touch1.pageX + touch2.pageX) / 2,
+      y: (touch1.pageY + touch2.pageY) / 2,
+    };
+  };
+
+  // Constrain pan offsets to keep video within bounds
+  const constrainPan = (scale, offsetX, offsetY) => {
+    if (scale <= 1) return { x: 0, y: 0 };
+    
+    const maxOffsetX = (SCREEN_WIDTH * (scale - 1)) / 2;
+    const maxOffsetY = (SCREEN_HEIGHT * (scale - 1)) / 2;
+    
+    return {
+      x: Math.max(-maxOffsetX, Math.min(maxOffsetX, offsetX)),
+      y: Math.max(-maxOffsetY, Math.min(maxOffsetY, offsetY)),
+    };
+  };
+
+  // Reset zoom function
+  const resetZoom = () => {
+    Animated.parallel([
+      Animated.spring(zoomScale, {
+        toValue: 1,
+        useNativeDriver: true,
+        tension: 40,
+        friction: 8,
+      }),
+      Animated.spring(panOffsetX, {
+        toValue: 0,
+        useNativeDriver: true,
+        tension: 40,
+        friction: 8,
+      }),
+      Animated.spring(panOffsetY, {
+        toValue: 0,
+        useNativeDriver: true,
+        tension: 40,
+        friction: 8,
+      }),
+    ]).start();
+    zoomScaleState.current = 1;
+    panOffsetXState.current = 0;
+    panOffsetYState.current = 0;
+  };
+
+  // Zoom to a specific point
+  const zoomToPoint = (centerX, centerY, targetScale = 2) => {
+    const currentScale = zoomScaleState.current;
+    
+    if (currentScale > 1) {
+      // Already zoomed, reset
+      resetZoom();
+    } else {
+      // Zoom to target scale centered on tap point
+      // Calculate the offset needed to center the tap point
+      const offsetX = (SCREEN_WIDTH / 2 - centerX) * (targetScale - 1);
+      const offsetY = (SCREEN_HEIGHT / 2 - centerY) * (targetScale - 1);
+      
+      const constrained = constrainPan(targetScale, offsetX, offsetY);
+      
+      Animated.parallel([
+        Animated.spring(zoomScale, {
+          toValue: targetScale,
+          useNativeDriver: true,
+          tension: 40,
+          friction: 8,
+        }),
+        Animated.spring(panOffsetX, {
+          toValue: constrained.x,
+          useNativeDriver: true,
+          tension: 40,
+          friction: 8,
+        }),
+        Animated.spring(panOffsetY, {
+          toValue: constrained.y,
+          useNativeDriver: true,
+          tension: 40,
+          friction: 8,
+        }),
+      ]).start();
+      
+      zoomScaleState.current = targetScale;
+      panOffsetXState.current = constrained.x;
+      panOffsetYState.current = constrained.y;
+    }
+  };
+
+  // Handle double tap to zoom/reset
+  const handleDoubleTap = (evt) => {
+    const now = Date.now();
+    if (now - lastTapTime.current < 300) {
+      // Double tap detected
+      if (tapTimeout.current) {
+        clearTimeout(tapTimeout.current);
+      }
+      
+      // Get tap location
+      const touch = evt?.nativeEvent?.touches?.[0] || evt?.nativeEvent;
+      const tapX = touch?.pageX || SCREEN_WIDTH / 2;
+      const tapY = touch?.pageY || SCREEN_HEIGHT / 2;
+      
+      zoomToPoint(tapX, tapY, 2);
+      lastTapTime.current = 0;
+    } else {
+      // Single tap - wait to see if it's a double tap
+      lastTapTime.current = now;
+      tapTimeout.current = setTimeout(() => {
+        lastTapTime.current = 0;
+      }, 300);
+    }
+  };
+
+  // Create PanResponder for pinch-to-zoom and pan
+  const pinchPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: (evt, gestureState) => {
+        const touchCount = evt.nativeEvent.touches.length;
+        // Respond to 2 finger pinch or 1 finger pan when zoomed
+        return touchCount === 2 || (touchCount === 1 && zoomScaleState.current > 1);
+      },
+      onMoveShouldSetPanResponder: (evt, gestureState) => {
+        const touchCount = evt.nativeEvent.touches.length;
+        const movementThreshold = 5;
+        const hasMoved = Math.abs(gestureState.dx) > movementThreshold || Math.abs(gestureState.dy) > movementThreshold;
+        return hasMoved && (touchCount === 2 || (touchCount === 1 && zoomScaleState.current > 1));
+      },
+      onPanResponderGrant: (evt, gestureState) => {
+        const touchCount = evt.nativeEvent.touches.length;
+        
+        if (touchCount === 2) {
+          // Start pinch
+          isPinching.current = true;
+          isPanning.current = false;
+          lastPinchDistance.current = getDistance(evt.nativeEvent.touches);
+          lastPinchCenter.current = getPinchCenter(evt.nativeEvent.touches);
+          pinchStartScale.current = zoomScaleState.current;
+          pinchStartPan.current = {
+            x: panOffsetXState.current,
+            y: panOffsetYState.current,
+          };
+        } else if (touchCount === 1 && zoomScaleState.current > 1) {
+          // Start pan (when zoomed)
+          isPanning.current = true;
+          isPinching.current = false;
+          const touch = evt.nativeEvent.touches[0];
+          lastPanPosition.current = { x: touch.pageX, y: touch.pageY };
+          panStartOffset.current = {
+            x: panOffsetXState.current,
+            y: panOffsetYState.current,
+          };
+        }
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        const touchCount = evt.nativeEvent.touches.length;
+        
+        if (touchCount === 2 && isPinching.current) {
+          // Handle pinch zoom
+          const currentDistance = getDistance(evt.nativeEvent.touches);
+          const currentCenter = getPinchCenter(evt.nativeEvent.touches);
+          
+          if (lastPinchDistance.current > 0) {
+            // Calculate scale based on distance change
+            const distanceRatio = currentDistance / lastPinchDistance.current;
+            const newScale = Math.max(1, Math.min(4, pinchStartScale.current * distanceRatio));
+            
+            // Calculate pan offset to keep the pinch center point fixed
+            const centerDeltaX = currentCenter.x - lastPinchCenter.current.x;
+            const centerDeltaY = currentCenter.y - lastPinchCenter.current.y;
+            
+            // Adjust pan offset based on scale change and center movement
+            const scaleChange = newScale / pinchStartScale.current;
+            const newOffsetX = pinchStartPan.current.x * scaleChange + centerDeltaX;
+            const newOffsetY = pinchStartPan.current.y * scaleChange + centerDeltaY;
+            
+            // Constrain pan to keep video within bounds
+            const constrained = constrainPan(newScale, newOffsetX, newOffsetY);
+            
+            // Update animated values
+            zoomScale.setValue(newScale);
+            panOffsetX.setValue(constrained.x);
+            panOffsetY.setValue(constrained.y);
+            
+            // Update state refs
+            zoomScaleState.current = newScale;
+            panOffsetXState.current = constrained.x;
+            panOffsetYState.current = constrained.y;
+          }
+        } else if (touchCount === 1 && isPanning.current && zoomScaleState.current > 1) {
+          // Handle single finger pan when zoomed
+          const touch = evt.nativeEvent.touches[0];
+          const deltaX = touch.pageX - lastPanPosition.current.x;
+          const deltaY = touch.pageY - lastPanPosition.current.y;
+          
+          const newOffsetX = panStartOffset.current.x + deltaX;
+          const newOffsetY = panStartOffset.current.y + deltaY;
+          
+          // Constrain pan to keep video within bounds
+          const constrained = constrainPan(zoomScaleState.current, newOffsetX, newOffsetY);
+          
+          // Update animated values
+          panOffsetX.setValue(constrained.x);
+          panOffsetY.setValue(constrained.y);
+          
+          // Update state refs
+          panOffsetXState.current = constrained.x;
+          panOffsetYState.current = constrained.y;
+        }
+      },
+      onPanResponderRelease: (evt, gestureState) => {
+        const currentScale = zoomScaleState.current;
+        
+        // If zoomed out to less than 1, snap back to 1
+        if (currentScale < 1.1) {
+          resetZoom();
+        }
+        
+        isPinching.current = false;
+        isPanning.current = false;
+        lastPinchDistance.current = 0;
+      },
+    })
+  ).current;
+
   const formatTime = (millis) => {
     const totalSeconds = Math.floor(millis / 1000);
     const hours = Math.floor(totalSeconds / 3600);
@@ -1186,6 +1854,52 @@ export default function VideoPlayerScreen({ route, navigation }) {
       return `${hours}:${pad(minutes)}:${pad(seconds)}`;
     }
     return `${pad(minutes)}:${pad(seconds)}`;
+  };
+
+  // Calculate estimated time to finish (remaining time)
+  const getEstimatedTimeToFinish = () => {
+    if (duration > 0 && position > 0) {
+      const remaining = duration - position;
+      return formatTime(remaining);
+    }
+    return '--:--';
+  };
+
+  // Get current phone time in HH:MM format
+  const getCurrentTime = () => {
+    const hours = String(currentTime.getHours()).padStart(2, '0');
+    const minutes = String(currentTime.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  };
+
+  // Get finish time (current time + remaining movie time) in HH:MM format
+  const getFinishTime = () => {
+    if (duration > 0 && position > 0) {
+      const remaining = duration - position; // in milliseconds
+      const now = new Date(); // Use actual current time for accurate calculation
+      const finishTime = new Date(now.getTime() + remaining);
+      const hours = String(finishTime.getHours()).padStart(2, '0');
+      const minutes = String(finishTime.getMinutes()).padStart(2, '0');
+      return `${hours}:${minutes}`;
+    }
+    return '--:--';
+  };
+
+  // Get battery icon name based on level and charging status
+  const getBatteryIconName = () => {
+    if (isCharging) {
+      return 'battery-charging';
+    }
+    if (batteryLevel === null) {
+      return 'battery-full';
+    }
+    if (batteryLevel >= 50) {
+      return 'battery-full';
+    } else if (batteryLevel >= 20) {
+      return 'battery-half';
+    } else {
+      return 'battery-dead';
+    }
   };
 
   // Check if content is anime (genre ID 16 = Animation, or original_language = 'ja')
@@ -1214,10 +1928,36 @@ export default function VideoPlayerScreen({ route, navigation }) {
     <View style={styles.container}>
       <StatusBar hidden={true} />
       
-      {loading ? (
+      {loading && !streamUrl ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#fff" />
-          <Text style={styles.loadingText}>Loading video...</Text>
+          {(() => {
+            // Get backdrop URL from item or episode
+            const backdropUrl = item?.backdrop_path 
+              ? TMDBService.getBackdropURL(item.backdrop_path, 'original')
+              : item?.poster_path 
+              ? TMDBService.getPosterURL(item.poster_path, 'original')
+              : episode?.still_path
+              ? TMDBService.getBackdropURL(episode.still_path, 'original')
+              : null;
+            
+            return (
+              <>
+                {backdropUrl ? (
+                  <CachedImage
+                    source={{ uri: backdropUrl }}
+                    style={styles.loadingBackdrop}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={[styles.loadingBackdrop, { backgroundColor: '#000' }]} />
+                )}
+                <View style={styles.loadingOverlay}>
+                  <ActivityIndicator size="large" color="#fff" />
+                  <Text style={styles.loadingText}>Loading video...</Text>
+                </View>
+              </>
+            );
+          })()}
         </View>
       ) : error ? (
         <View style={styles.errorContainer}>
@@ -1231,34 +1971,88 @@ export default function VideoPlayerScreen({ route, navigation }) {
           </TouchableOpacity>
         </View>
       ) : streamUrl ? (
-        <View style={styles.videoContainer}>
-          <Video
-            ref={videoRef}
-            style={styles.video}
-            source={{ uri: streamUrl }}
-            useNativeControls={false}
-            resizeMode={ResizeMode.CONTAIN}
-            shouldPlay={isPlaying}
-            rate={playbackRate}
-            volume={volume}
-            isMuted={isMuted}
-            onPlaybackStatusUpdate={handlePlaybackStatus}
-            onLoadStart={async () => {
-              // Ensure audio is enabled when video loads
-              if (videoRef.current) {
-                try {
-                  await videoRef.current.setVolumeAsync(volume);
-                  await videoRef.current.setIsMutedAsync(isMuted);
-                } catch (error) {
-                  console.error('Error setting audio on load:', error);
+        <View style={styles.videoContainer} {...pinchPanResponder.panHandlers}>
+          <Animated.View
+            style={[
+              styles.videoWrapper,
+              {
+                transform: [
+                  { scale: zoomScale },
+                  { translateX: panOffsetX },
+                  { translateY: panOffsetY },
+                ],
+              },
+            ]}
+          >
+            <Video
+              ref={videoRef}
+              style={styles.video}
+              source={{ uri: streamUrl }}
+              useNativeControls={false}
+              resizeMode={ResizeMode.CONTAIN}
+              shouldPlay={true}
+              rate={playbackRate}
+              volume={volume}
+              isMuted={isMuted}
+              onPlaybackStatusUpdate={handlePlaybackStatus}
+              onLoadStart={async () => {
+                // Ensure audio is enabled when video loads
+                if (videoRef.current) {
+                  try {
+                    await videoRef.current.setVolumeAsync(volume);
+                    await videoRef.current.setIsMutedAsync(isMuted);
+                  } catch (error) {
+                    console.error('Error setting audio on load:', error);
+                  }
                 }
-              }
-            }}
-            onError={(error) => {
-              console.error('Video error:', error);
-              setError('Video playback error');
-            }}
-          />
+              }}
+              onLoad={async () => {
+                // Auto-play when video is loaded - force play
+                if (videoRef.current && !hasAutoPlayed.current) {
+                  try {
+                    hasAutoPlayed.current = true;
+                    await videoRef.current.setVolumeAsync(volume);
+                    await videoRef.current.setIsMutedAsync(isMuted);
+                    // Force play multiple times to ensure it starts
+                    await videoRef.current.playAsync();
+                    setTimeout(async () => {
+                      if (videoRef.current) {
+                        const status = await videoRef.current.getStatusAsync();
+                        if (!status.isPlaying) {
+                          await videoRef.current.playAsync();
+                        }
+                      }
+                    }, 200);
+                    setIsPlaying(true);
+                    console.log('Video auto-played on load');
+                  } catch (error) {
+                    console.error('Error auto-playing on load:', error);
+                    hasAutoPlayed.current = false; // Allow retry
+                  }
+                }
+              }}
+              onReadyForDisplay={async () => {
+                // Also try to play when video is ready for display
+                if (videoRef.current && !hasAutoPlayed.current) {
+                  try {
+                    hasAutoPlayed.current = true;
+                    await videoRef.current.setVolumeAsync(volume);
+                    await videoRef.current.setIsMutedAsync(isMuted);
+                    await videoRef.current.playAsync();
+                    setIsPlaying(true);
+                    console.log('Video auto-played on ready for display');
+                  } catch (error) {
+                    console.error('Error auto-playing on ready:', error);
+                    hasAutoPlayed.current = false;
+                  }
+                }
+              }}
+              onError={(error) => {
+                console.error('Video error:', error);
+                setError('Video playback error');
+              }}
+            />
+          </Animated.View>
 
           {/* Dim Overlay */}
           <Animated.View 
@@ -1273,7 +2067,22 @@ export default function VideoPlayerScreen({ route, navigation }) {
           <TouchableOpacity 
             style={styles.controlsOverlay}
             activeOpacity={1}
-            onPress={toggleControls}
+            onPress={(evt) => {
+              const now = Date.now();
+              const timeSinceLastTap = now - lastTapTime.current;
+              
+              if (timeSinceLastTap < 300) {
+                // Double tap - handle zoom
+                handleDoubleTap(evt);
+              } else {
+                // Single tap - toggle controls (unless zoomed and panning)
+                if (!isPanning.current && !isPinching.current) {
+                  toggleControls();
+                }
+              }
+              
+              lastTapTime.current = now;
+            }}
             disabled={isMenuExpanded && isSubtitleSearchMode}
           >
             {!isControlsLocked && (
@@ -1300,14 +2109,22 @@ export default function VideoPlayerScreen({ route, navigation }) {
                       </BlurView>
                     </TouchableOpacity>
                     
-                    {episodeInfo && (
-                      <View style={styles.titleContainer}>
+                    <View style={styles.titleContainer}>
+                      {episodeInfo && (
                         <Text style={styles.episodeNumber}>{episodeInfo}</Text>
+                      )}
+                      {logoUrl && !episode ? (
+                        <CachedImage
+                          source={{ uri: logoUrl }}
+                          style={styles.titleLogo}
+                          resizeMode="contain"
+                        />
+                      ) : (
                         <Text style={styles.titleText} numberOfLines={1}>
                           {item?.title || item?.name || 'Video'}
                         </Text>
-                      </View>
-                    )}
+                      )}
+                    </View>
                   </View>
 
                   <View style={styles.topRight}>
@@ -1442,62 +2259,143 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
                   {/* Control Buttons Row - Above Slider */}
                   <View style={styles.controlButtonsRow}>
-                    {/* Speed Button - Expandable */}
-                    <Animated.View 
-                      style={[styles.speedButtonContainer, { width: speedButtonWidth }]}
-                      {...speedPanResponder.panHandlers}
-                    >
-                      <BlurView intensity={80} tint="dark" style={styles.speedButtonBlur}>
-                        <TouchableOpacity
-                          style={styles.speedButtonContent}
-                          onPress={toggleSpeedOptions}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="speedometer" size={20} color="#fff" />
-                          <Text style={styles.speedButtonText}>{playbackRate}x</Text>
-                        </TouchableOpacity>
-                        
-                        {isSpeedExpanded && (
-                          <View style={styles.speedOptionsContainer}>
-                            {playbackRates.map((rate) => (
-                              <TouchableOpacity
-                                key={rate}
-                                style={[
-                                  styles.speedOption,
-                                  playbackRate === rate && styles.speedOptionActive,
-                                ]}
-                                onPress={() => changePlaybackRate(rate)}
-                              >
-                                <Text
-                                  style={[
-                                    styles.speedOptionText,
-                                    playbackRate === rate && styles.speedOptionTextActive,
-                                  ]}
-                                >
-                                  {rate}x
-                                </Text>
-                              </TouchableOpacity>
-                            ))}
-                          </View>
-                        )}
-                      </BlurView>
-                    </Animated.View>
-
-                    {/* Subtitle Button - Context Menu */}
-                    <View style={styles.subtitleButtonWrapper}>
+                    {showNextEpisodeButton ? (
+                      /* Next Episode Button - Replaces other buttons when episode is nearly finished */
                       <TouchableOpacity
-                        style={styles.controlButton}
-                        onPress={toggleSubtitleMenu}
+                        style={styles.nextEpisodeButton}
+                        onPress={playNextEpisode}
                         activeOpacity={0.7}
                       >
-                        <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
-                          <Ionicons 
-                            name={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "text" : "text-outline"} 
-                            size={20} 
-                            color={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "#fff" : "#fff"} 
-                          />
+                        <BlurView intensity={80} tint="dark" style={styles.nextEpisodeButtonBlur}>
+                          <Ionicons name="play-forward" size={20} color="#fff" />
+                          <Text style={styles.nextEpisodeButtonText}>Next Episode</Text>
                         </BlurView>
                       </TouchableOpacity>
+                    ) : (
+                      <>
+                        {/* Server Button - Only for Vidfast */}
+                        {videoSource === 'vidfast' && availableServers.length > 0 && (
+                          <View style={styles.serverButtonWrapper}>
+                            <TouchableOpacity
+                              style={styles.controlButton}
+                              onPress={toggleServerMenu}
+                              activeOpacity={0.7}
+                            >
+                              <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
+                                <Ionicons name="server" size={20} color="#fff" />
+                              </BlurView>
+                            </TouchableOpacity>
+                            
+                            <Animated.View 
+                              style={[
+                                styles.serverMenuContainer,
+                                {
+                                  opacity: serverModalOpacity,
+                                  transform: [{ translateY: serverModalTranslateY }],
+                                }
+                              ]}
+                              pointerEvents={isServerExpanded ? 'auto' : 'none'}
+                            >
+                              <BlurView intensity={100} tint="dark" style={styles.serverMenuBlur}>
+                                <ScrollView 
+                                  style={styles.serverMenuScroll}
+                                  nestedScrollEnabled={true}
+                                  showsVerticalScrollIndicator={false}
+                                >
+                                  {availableServers.map((server, index) => (
+                                    <TouchableOpacity
+                                      key={index}
+                                      style={[
+                                        styles.serverMenuItem,
+                                        currentServer === server.name && styles.serverMenuItemActive,
+                                      ]}
+                                      onPress={async () => {
+                                        setIsServerExpanded(false);
+                                        setLoading(true);
+                                        try {
+                                          await fetchStreamUrl(server.name);
+                                        } catch (error) {
+                                          console.error('Error switching server:', error);
+                                          setError('Failed to switch server');
+                                          setLoading(false);
+                                        }
+                                      }}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.serverMenuItemText,
+                                          currentServer === server.name && styles.serverMenuItemTextActive,
+                                        ]}
+                                      >
+                                        {server.name || `Server ${index + 1}`}
+                                      </Text>
+                                      {currentServer === server.name && (
+                                        <Ionicons name="checkmark" size={16} color="#fff" style={styles.serverMenuCheck} />
+                                      )}
+                                    </TouchableOpacity>
+                                  ))}
+                                </ScrollView>
+                              </BlurView>
+                            </Animated.View>
+                          </View>
+                        )}
+
+                        {/* Speed Button - Expandable */}
+                        <Animated.View 
+                          style={[styles.speedButtonContainer, { width: speedButtonWidth }]}
+                          {...speedPanResponder.panHandlers}
+                        >
+                          <BlurView intensity={80} tint="dark" style={styles.speedButtonBlur}>
+                            <TouchableOpacity
+                              style={styles.speedButtonContent}
+                              onPress={toggleSpeedOptions}
+                              activeOpacity={0.7}
+                            >
+                              <Ionicons name="speedometer" size={20} color="#fff" />
+                              <Text style={styles.speedButtonText}>{playbackRate}x</Text>
+                            </TouchableOpacity>
+                            
+                            {isSpeedExpanded && (
+                              <View style={styles.speedOptionsContainer}>
+                                {playbackRates.map((rate) => (
+                                  <TouchableOpacity
+                                    key={rate}
+                                    style={[
+                                      styles.speedOption,
+                                      playbackRate === rate && styles.speedOptionActive,
+                                    ]}
+                                    onPress={() => changePlaybackRate(rate)}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.speedOptionText,
+                                        playbackRate === rate && styles.speedOptionTextActive,
+                                      ]}
+                                    >
+                                      {rate}x
+                                    </Text>
+                                  </TouchableOpacity>
+                                ))}
+                              </View>
+                            )}
+                          </BlurView>
+                        </Animated.View>
+
+                        {/* Subtitle Button - Context Menu */}
+                        <View style={styles.subtitleButtonWrapper}>
+                          <TouchableOpacity
+                            style={styles.controlButton}
+                            onPress={toggleSubtitleMenu}
+                            activeOpacity={0.7}
+                          >
+                            <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
+                              <Ionicons 
+                                name={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "text" : "text-outline"} 
+                                size={20} 
+                                color={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "#fff" : "#fff"} 
+                              />
+                            </BlurView>
+                          </TouchableOpacity>
                       
                       <Animated.View 
                         style={[
@@ -1541,6 +2439,23 @@ export default function VideoPlayerScreen({ route, navigation }) {
                           </BlurView>
                       </Animated.View>
                     </View>
+
+                    {/* Orientation Toggle Button - Only on native platforms */}
+                    {Platform.OS !== 'web' && (
+                      <TouchableOpacity
+                        style={styles.controlButton}
+                        onPress={toggleOrientation}
+                        activeOpacity={0.7}
+                      >
+                        <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
+                          <Ionicons 
+                            name={isLandscape ? "phone-portrait" : "phone-landscape"} 
+                            size={20} 
+                            color="#fff" 
+                          />
+                        </BlurView>
+                      </TouchableOpacity>
+                    )}
 
                     {/* Menu Button */}
                     <View style={styles.menuButtonWrapper}>
@@ -1737,11 +2652,13 @@ export default function VideoPlayerScreen({ route, navigation }) {
                         </BlurView>
                       </Animated.View>
                     </View>
+                      </>
+                    )}
                   </View>
 
                   {/* Progress Slider - iOS Native Style */}
                   <View style={styles.progressContainer}>
-                    <Text style={styles.timeText}>{formatTime(position)}</Text>
+                    <Text style={styles.timeText}>{getCurrentTime()}</Text>
                     <View
                       style={styles.sliderWrapper}
                       onLayout={(event) => {
@@ -1757,8 +2674,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
                           {
                             height: sliderHeight,
                             borderRadius: sliderHeight.interpolate({
-                              inputRange: [24, 30],
-                              outputRange: [12, 15],
+                              inputRange: [35, 39],
+                              outputRange: [17.5, 19.5],
                             }),
                           },
                         ]}
@@ -1772,12 +2689,43 @@ export default function VideoPlayerScreen({ route, navigation }) {
                                 inputRange: [0, 1],
                                 outputRange: ['0%', '100%'],
                               }),
+                              borderRadius: sliderHeight.interpolate({
+                                inputRange: [35, 39],
+                                outputRange: [17.5, 19.5],
+                              }),
                             },
                           ]}
                         />
                       </Animated.View>
                     </View>
-                    <Text style={styles.timeText}>{formatTime(duration)}</Text>
+                    <Text style={styles.timeText}>{getFinishTime()}</Text>
+                  </View>
+
+                  {/* Info Section */}
+                  <View style={styles.infoSection}>
+                    <Text style={styles.infoText}>
+                      {formatTime(position)}
+                    </Text>
+                    <Text style={styles.infoSeparator}>|</Text>
+                    <Text style={styles.infoText}>
+                      {getFinishTime()}
+                    </Text>
+                    {batteryLevel !== null && (
+                      <>
+                        <Text style={styles.infoSeparator}>|</Text>
+                        <View style={styles.batteryContainer}>
+                          <Ionicons 
+                            name={getBatteryIconName()} 
+                            size={14} 
+                            color="#fff" 
+                            style={styles.batteryIcon} 
+                          />
+                          <Text style={styles.infoText}>
+                            {batteryLevel}%
+                          </Text>
+                        </View>
+                      </>
+                    )}
                   </View>
                 </Animated.View>
               </>
@@ -1842,13 +2790,37 @@ const styles = StyleSheet.create({
   },
   loadingContainer: {
     flex: 1,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000',
+    position: 'relative',
+  },
+  loadingBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
   },
   loadingText: {
     color: '#fff',
     marginTop: 16,
     fontSize: 16,
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   errorContainer: {
     flex: 1,
@@ -1889,6 +2861,11 @@ const styles = StyleSheet.create({
   videoContainer: {
     flex: 1,
     backgroundColor: '#000',
+    width: '100%',
+    height: '100%',
+    overflow: 'hidden',
+  },
+  videoWrapper: {
     width: '100%',
     height: '100%',
   },
@@ -1949,6 +2926,11 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 20,
     fontWeight: 'bold',
+  },
+  titleLogo: {
+    height: 40,
+    maxWidth: 200,
+    marginTop: 4,
   },
   topRight: {
     flexDirection: 'row',
@@ -2047,7 +3029,51 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 8,
-    marginBottom: 12,
+    marginBottom: 8,
+  },
+  serverButtonWrapper: {
+    marginLeft: 12,
+    position: 'relative',
+  },
+  serverMenuContainer: {
+    position: 'absolute',
+    bottom: 50,
+    right: 0,
+    minWidth: 200,
+    maxWidth: 280,
+    maxHeight: 300,
+    zIndex: 1000,
+  },
+  serverMenuBlur: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    paddingVertical: 4,
+  },
+  serverMenuScroll: {
+    maxHeight: 300,
+  },
+  serverMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  serverMenuItemActive: {
+    backgroundColor: 'rgba(76, 175, 80, 0.2)',
+  },
+  serverMenuItemText: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 14,
+    fontWeight: '500',
+    flex: 1,
+  },
+  serverMenuItemTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  serverMenuCheck: {
+    marginLeft: 8,
   },
   timeText: {
     color: '#fff',
@@ -2056,26 +3082,80 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginHorizontal: 12,
   },
+  infoSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  infoText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 11,
+    marginHorizontal: 6,
+  },
+  infoSeparator: {
+    color: 'rgba(255, 255, 255, 0.4)',
+    fontSize: 11,
+    marginHorizontal: 4,
+  },
+  batteryContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 2,
+  },
+  batteryIcon: {
+    marginRight: 4,
+  },
   sliderWrapper: {
     flex: 1,
-    height: 40,
+    height: 50,
     justifyContent: 'center',
     paddingVertical: 18, // Extra touch area
   },
   sliderTrack: {
     width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
     overflow: 'hidden',
   },
   sliderFill: {
     height: '100%',
     backgroundColor: '#ffffff',
-    borderRadius: 2,
   },
   controlButtonsRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     marginBottom: 8,
+    alignItems: 'center',
+  },
+  nextEpisodeButton: {
+    height: 42,
+    borderRadius: 21,
+    overflow: 'hidden',
+  },
+  nextEpisodeButtonBlur: {
+    height: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  nextEpisodeButtonText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+    marginLeft: 6,
+  },
+  controlButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    overflow: 'hidden',
+  },
+  controlButtonBlur: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
     alignItems: 'center',
   },
   speedButtonContainer: {
@@ -2447,7 +3527,7 @@ const styles = StyleSheet.create({
   sliderFill: {
     position: 'absolute',
     height: '100%',
-    backgroundColor: 'rgba(255, 59, 48, 0.8)',
+    backgroundColor: '#ffffff',
     borderRadius: 2,
   },
   sliderThumb: {

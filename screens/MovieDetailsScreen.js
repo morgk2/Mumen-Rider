@@ -78,6 +78,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const [isDownloaded, setIsDownloaded] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [episodeProgress, setEpisodeProgress] = useState({});
   const scrollY = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -97,13 +98,17 @@ export default function MovieDetailsScreen({ route, navigation }) {
     }
   }, [item]);
   
-  // Reload download status when screen comes into focus
+  // Reload download status and episode progress when screen comes into focus
   useFocusEffect(
     React.useCallback(() => {
       if (item) {
         checkDownloadStatus();
+        const isTVShow = !item.title && (item.name || item.media_type === 'tv');
+        if (isTVShow && episodes.length > 0) {
+          loadEpisodeProgress(episodes, selectedSeason);
+        }
       }
-    }, [item])
+    }, [item, episodes, selectedSeason])
   );
   
   // Check download status periodically when downloading
@@ -212,11 +217,42 @@ export default function MovieDetailsScreen({ route, navigation }) {
     try {
       const episodesData = await TMDBService.fetchTVEpisodes(item.id, seasonNumber);
       setEpisodes(episodesData);
+      
+      // Load progress for all episodes
+      await loadEpisodeProgress(episodesData, seasonNumber);
     } catch (error) {
       console.error('Error fetching episodes:', error);
       setEpisodes([]);
     } finally {
       setLoadingEpisodes(false);
+    }
+  };
+
+  const loadEpisodeProgress = async (episodesData, seasonNumber) => {
+    if (!item || !item.id || !episodesData || episodesData.length === 0) return;
+    
+    try {
+      const mediaType = item.media_type || 'tv';
+      const progressMap = {};
+      
+      // Load progress for each episode
+      for (const episode of episodesData) {
+        if (episode.episode_number) {
+          const progress = await WatchProgressService.getProgress(
+            item.id,
+            mediaType,
+            seasonNumber,
+            episode.episode_number
+          );
+          if (progress) {
+            progressMap[episode.episode_number] = progress;
+          }
+        }
+      }
+      
+      setEpisodeProgress(progressMap);
+    } catch (error) {
+      console.error('Error loading episode progress:', error);
     }
   };
 
@@ -1184,6 +1220,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
                       tvShow={item}
                       season={selectedSeason}
                       onPress={handleEpisodePress}
+                      progress={episodeProgress[episode.episode_number] || null}
                     />
                   ))}
                 </View>

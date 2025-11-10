@@ -2,12 +2,13 @@ import React from 'react';
 import { View, Text, Image, StyleSheet, TouchableOpacity } from 'react-native';
 import { TMDBService } from '../services/TMDBService';
 
-export const EpisodeItem = ({ episode, tvShow, season, onPress }) => {
+export const EpisodeItem = ({ episode, tvShow, season, onPress, progress }) => {
   const thumbnailUrl = TMDBService.getStillURL(episode.still_path);
   const episodeNumber = episode.episode_number || 0;
   const episodeName = episode.name || `Episode ${episodeNumber}`;
   const overview = episode.overview || '';
   const airDate = episode.air_date ? new Date(episode.air_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  const progressPercentage = progress ? (progress.progress || 0) * 100 : 0;
 
   return (
     <TouchableOpacity
@@ -25,6 +26,11 @@ export const EpisodeItem = ({ episode, tvShow, season, onPress }) => {
         ) : (
           <View style={[styles.thumbnail, styles.placeholder]}>
             <Text style={styles.placeholderText}>No Image</Text>
+          </View>
+        )}
+        {progress && progressPercentage > 0 && (
+          <View style={styles.progressBarContainer}>
+            <View style={[styles.progressBar, { width: `${progressPercentage}%` }]} />
           </View>
         )}
       </View>
@@ -67,10 +73,23 @@ const styles = StyleSheet.create({
   thumbnailContainer: {
     width: 160,
     height: 90,
+    position: 'relative',
   },
   thumbnail: {
     width: '100%',
     height: '100%',
+  },
+  progressBarContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: '#FF3B30',
   },
   placeholder: {
     backgroundColor: '#1a1a1a',

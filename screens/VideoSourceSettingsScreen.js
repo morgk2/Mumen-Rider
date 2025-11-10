@@ -114,6 +114,33 @@ export default function VideoSourceSettingsScreen({ navigation }) {
                 </View>
               </View>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.sourceOption,
+                videoSource === 'vidfast' && styles.sourceOptionActive
+              ]}
+              onPress={() => handleVideoSourceChange('vidfast')}
+            >
+              <View style={styles.sourceOptionContent}>
+                <Ionicons
+                  name={videoSource === 'vidfast' ? 'radio-button-on' : 'radio-button-off'}
+                  size={24}
+                  color={videoSource === 'vidfast' ? '#4CAF50' : 'rgba(255, 255, 255, 0.5)'}
+                />
+                <View style={styles.sourceOptionText}>
+                  <Text style={[
+                    styles.sourceOptionTitle,
+                    videoSource === 'vidfast' && styles.sourceOptionTitleActive
+                  ]}>
+                    Vidfast
+                  </Text>
+                  <Text style={styles.sourceOptionDescription}>
+                    Vidfast streaming source with 4K support
+                  </Text>
+                </View>
+              </View>
+            </TouchableOpacity>
           </View>
         </View>
       </ScrollView>
@@ -202,4 +229,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
 });
+
+
 

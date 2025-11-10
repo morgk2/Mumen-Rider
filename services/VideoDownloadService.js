@@ -2,6 +2,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { VixsrcService } from './VixsrcService';
 import { N3tflixService } from './N3tflixService';
+import { VidfastService } from './VidfastService';
 import { StorageService } from './StorageService';
 import { OpenSubtitlesService } from './OpenSubtitlesService';
 
@@ -176,7 +177,7 @@ export const VideoDownloadService = {
       
       // Get the selected video source
       const source = await StorageService.getVideoSource();
-      const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+      const service = source === 'n3tflix' ? N3tflixService : source === 'vidfast' ? VidfastService : VixsrcService;
       
       const result = await service.fetchMovieWithSubtitles(mediaId);
       
@@ -420,7 +421,7 @@ export const VideoDownloadService = {
       
       // Get the selected video source
       const source = await StorageService.getVideoSource();
-      const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+      const service = source === 'n3tflix' ? N3tflixService : source === 'vidfast' ? VidfastService : VixsrcService;
       
       const result = await service.fetchEpisodeWithSubtitles(mediaId, season, episodeNumber);
       
