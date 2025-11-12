@@ -8,6 +8,7 @@ const EXTERNAL_PLAYER_KEY = '@externalPlayer';
 const LETTERBOXD_USERNAME_KEY = '@letterboxd_username';
 const LETTERBOXD_PROFILE_KEY = '@letterboxd_profile';
 const LETTERBOXD_WATCHLIST_KEY = '@letterboxd_watchlist';
+const DOWNLOAD_QUALITY_KEY = '@download_quality';
 
 export class StorageService {
   // Bookmarks/Saves
@@ -420,6 +421,27 @@ export class StorageService {
       return Date.now() - timestamp > maxAge;
     } catch (error) {
       return true;
+    }
+  }
+
+  // Download Quality Preference
+  static async getDownloadQuality() {
+    try {
+      const quality = await AsyncStorage.getItem(DOWNLOAD_QUALITY_KEY);
+      return quality || 'Best'; // Default to Best quality
+    } catch (error) {
+      console.error('Error getting download quality:', error);
+      return 'Best';
+    }
+  }
+
+  static async setDownloadQuality(quality) {
+    try {
+      await AsyncStorage.setItem(DOWNLOAD_QUALITY_KEY, quality);
+      return true;
+    } catch (error) {
+      console.error('Error setting download quality:', error);
+      return false;
     }
   }
 }

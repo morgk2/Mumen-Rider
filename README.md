@@ -76,8 +76,7 @@ A modern, feature-rich streaming application built with React Native and Expo th
 - **react-native-safe-area-context** - Safe area handling
 
 ### Media & Video
-- **expo-av** - Audio/Video playback
-- **expo-video-player** - Custom video player
+- **expo-video** - Video playback (modern replacement for expo-av)
 - **expo-screen-orientation** - Screen rotation control
 - **@react-native-community/slider** - Video progress slider
 

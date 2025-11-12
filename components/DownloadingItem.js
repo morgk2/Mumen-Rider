@@ -96,20 +96,36 @@ export const DownloadingItem = ({ download, onCancel }) => {
           <Text style={styles.statusText}>{getStatusText()}</Text>
         </View>
 
-        {download.status === 'downloading' && (
+        {(download.status === 'downloading' || download.status === 'queued') && (
           <View style={styles.progressContainer}>
+            <View style={styles.progressHeader}>
+              <Text style={styles.progressLabel}>Progress</Text>
+              <Text style={styles.progressPercent}>{Math.min(100, Math.max(0, progressPercent))}%</Text>
+            </View>
             <View style={styles.progressBar}>
               <View 
                 style={[
                   styles.progressFill, 
-                  { width: `${progressPercent}%` }
+                  { width: `${Math.min(100, Math.max(0, progressPercent))}%` }
                 ]} 
               />
             </View>
             <Text style={styles.progressText}>
               {isVideoDownload 
-                ? `Downloading... (${progressPercent}%)`
-                : `${download.downloadedPages || 0} / ${download.totalPages || 0} pages (${progressPercent}%)`
+                ? (download.downloadStatus === 'fetching_stream' 
+                    ? 'Fetching stream...' 
+                    : download.downloadStatus === 'downloading_hls'
+                    ? 'Downloading HLS segments...'
+                    : download.downloadStatus === 'downloading_video'
+                    ? 'Downloading video...'
+                    : download.downloadStatus === 'validating_file'
+                    ? 'Validating file...'
+                    : download.downloadStatus === 'saving_metadata'
+                    ? 'Saving metadata...'
+                    : download.status === 'queued'
+                    ? 'Queued for download...'
+                    : 'Downloading...')
+                : `${download.downloadedPages || 0} / ${download.totalPages || 0} pages`
               }
             </Text>
           </View>
@@ -189,23 +205,39 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.8)',
   },
   progressContainer: {
-    marginTop: 4,
+    marginTop: 8,
+  },
+  progressHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  progressLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '500',
+  },
+  progressPercent: {
+    fontSize: 14,
+    color: '#4CAF50',
+    fontWeight: 'bold',
   },
   progressBar: {
-    height: 6,
+    height: 8,
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 3,
+    borderRadius: 4,
     overflow: 'hidden',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   progressFill: {
     height: '100%',
     backgroundColor: '#4CAF50',
-    borderRadius: 3,
+    borderRadius: 4,
   },
   progressText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.5)',
   },
   errorText: {
     fontSize: 12,

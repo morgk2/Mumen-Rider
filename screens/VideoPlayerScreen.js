@@ -18,7 +18,7 @@ import {
   Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { Video, ResizeMode, Audio } from 'expo-av';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -35,6 +35,7 @@ import { TMDBService } from '../services/TMDBService';
 import { CachedImage } from '../components/CachedImage';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { M3U8Parser } from '../utils/M3U8Parser';
 
 const SUBTITLE_SETTINGS_KEY = '@subtitle_settings';
 
@@ -43,7 +44,6 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 export default function VideoPlayerScreen({ route, navigation }) {
   const { item, episode, season, episodeNumber, resumePosition } = route.params || {};
   const insets = useSafeAreaInsets();
-  const videoRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [streamUrl, setStreamUrl] = useState(null);
@@ -54,8 +54,97 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const progressSaveIntervalRef = useRef(null);
   const hasSeekedToResumePosition = useRef(false);
   const hasAutoPlayed = useRef(false);
+  const hasVideoFinished = useRef(false);
   const positionRef = useRef(resumePosition || 0);
   const durationRef = useRef(0);
+  
+  // Create video player - initialize with null, will be set when streamUrl is available
+  const player = useVideoPlayer(null);
+  
+  // Track if replace is in progress to prevent race conditions
+  const isReplacingRef = useRef(false);
+  
+  // Update player source when streamUrl changes
+  useEffect(() => {
+    if (player && streamUrl) {
+      const replaceSource = async () => {
+        // Prevent multiple simultaneous replaces
+        if (isReplacingRef.current) {
+          console.log('Replace already in progress, skipping...');
+          return;
+        }
+        
+        try {
+          isReplacingRef.current = true;
+          
+          // Reset flags before replacing
+          hasAutoPlayed.current = false;
+          hasSeekedToResumePosition.current = false;
+          hasVideoFinished.current = false;
+          
+          // Set loading state while replacing
+          setLoading(true);
+          setError(null);
+          
+          // Use replaceAsync to avoid UI freezes on iOS
+          await player.replaceAsync({ uri: streamUrl });
+          
+          console.log('Video source replaced successfully');
+          
+          // Wait a bit for the player to start loading
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          // Check if player is in error state
+          if (player.status === 'error') {
+            throw new Error('Player entered error state after replace');
+          }
+          
+          // Loading state will be managed by the progress update effect
+          // which hides loading when video reaches 1 second
+          isReplacingRef.current = false;
+        } catch (error) {
+          console.error('Error replacing video source:', error);
+          setError('Failed to load video source. Please try again.');
+          setLoading(false);
+          isReplacingRef.current = false;
+        }
+      };
+      
+      replaceSource();
+    }
+  }, [player, streamUrl]);
+  
+  // Configure player properties when they change
+  useEffect(() => {
+    if (player) {
+      player.loop = false;
+      player.muted = isMuted;
+    }
+  }, [player, isMuted]);
+  
+  useEffect(() => {
+    if (player) {
+      player.volume = volume;
+    }
+  }, [player, volume]);
+  
+  useEffect(() => {
+    if (player) {
+      player.playbackRate = playbackRate;
+    }
+  }, [player, playbackRate]);
+  
+  // Seek to resume position when player is ready
+  useEffect(() => {
+    if (player && resumePosition && resumePosition > 0 && !hasSeekedToResumePosition.current && player.duration > 0) {
+      hasSeekedToResumePosition.current = true;
+      player.currentTime = resumePosition / 1000; // expo-video uses seconds
+      // If resuming to a position > 1 second, hide loading immediately
+      if (resumePosition >= 1000) {
+        setLoading(false);
+      }
+    }
+  }, [player, resumePosition, player?.duration]);
   const [showControls, setShowControls] = useState(true);
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [isControlsLocked, setIsControlsLocked] = useState(false);
@@ -66,9 +155,15 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [subtitleTracks, setSubtitleTracks] = useState([]);
   const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState(null);
   const [isSubtitleExpanded, setIsSubtitleExpanded] = useState(false);
-  const [isMenuExpanded, setIsMenuExpanded] = useState(false);
   const [isSubtitleSearchMode, setIsSubtitleSearchMode] = useState(false);
+  const [isAppearanceMode, setIsAppearanceMode] = useState(false);
+  const [isDelayMode, setIsDelayMode] = useState(false);
+  const [showSubtitleSettingsModal, setShowSubtitleSettingsModal] = useState(false);
+  const [expandedLanguageGroup, setExpandedLanguageGroup] = useState(null);
   const [currentSubtitleText, setCurrentSubtitleText] = useState('');
+  const [audioTracks, setAudioTracks] = useState([]);
+  const [selectedAudioTrack, setSelectedAudioTrack] = useState(null);
+  const [showAudioSettingsModal, setShowAudioSettingsModal] = useState(false);
   const [subtitleSearchQuery, setSubtitleSearchQuery] = useState('');
   const [subtitleSearchLanguage, setSubtitleSearchLanguage] = useState('eng');
   const [subtitleSearchResults, setSubtitleSearchResults] = useState([]);
@@ -107,6 +202,59 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [subtitleShadow, setSubtitleShadow] = useState(false);
   const [subtitleBackground, setSubtitleBackground] = useState(true);
   const [subtitleOutline, setSubtitleOutline] = useState(false);
+  const [subtitleDelay, setSubtitleDelay] = useState(0); // Delay in milliseconds (-3000 to +3000)
+  
+  // Size slider width ref for calculations
+  const sizeSliderWidthRef = useRef(200);
+  // Delay slider width ref for calculations
+  const delaySliderWidthRef = useRef(200);
+  // Delay slider initial position when dragging starts
+  const delaySliderInitialPositionRef = useRef(0);
+  // Delay slider is dragging state
+  const [isDelaySliderDragging, setIsDelaySliderDragging] = useState(false);
+  
+  // Delay slider pan responder
+  const delaySliderPanResponder = useRef(null);
+  
+  // Initialize delay slider pan responder
+  useEffect(() => {
+    delaySliderPanResponder.current = PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (evt, gestureState) => {
+        // Only respond to horizontal movement
+        return Math.abs(gestureState.dx) > 5 || Math.abs(gestureState.dy) < 10;
+      },
+      onPanResponderGrant: (evt) => {
+        // When user starts dragging, capture the current delay value
+        setIsDelaySliderDragging(true);
+        delaySliderInitialPositionRef.current = subtitleDelay;
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        // Calculate new position based on drag delta
+        const sliderWidth = delaySliderWidthRef.current;
+        if (sliderWidth === 0) return;
+        
+        // Calculate the change in position as a percentage of slider width
+        const deltaPercentage = gestureState.dx / sliderWidth;
+        // Convert percentage to milliseconds (6000ms total range: -3000 to +3000)
+        const deltaMs = deltaPercentage * 6000;
+        
+        // Calculate new delay based on initial position + delta
+        const newDelay = Math.round(
+          Math.max(-3000, Math.min(3000, delaySliderInitialPositionRef.current + deltaMs))
+        );
+        setSubtitleDelay(newDelay);
+      },
+      onPanResponderRelease: () => {
+        // User released
+        setIsDelaySliderDragging(false);
+      },
+      onPanResponderTerminate: () => {
+        // Gesture was cancelled
+        setIsDelaySliderDragging(false);
+      },
+    });
+  }, [subtitleDelay]);
   
   // Video source state
   const [videoSource, setVideoSource] = useState('vixsrc');
@@ -243,8 +391,10 @@ export default function VideoPlayerScreen({ route, navigation }) {
       if (logo) {
         const logoPath = logo.file_path;
         const logoUrl = `https://image.tmdb.org/t/p/w500${logoPath}`;
+        console.log('Logo fetched successfully:', logoUrl);
         setLogoUrl(logoUrl);
       } else {
+        console.log('No logo found for movie');
         setLogoUrl(null);
       }
     } catch (error) {
@@ -328,10 +478,230 @@ export default function VideoPlayerScreen({ route, navigation }) {
         setSubtitleShadow(settings.shadow || false);
         setSubtitleBackground(settings.background !== undefined ? settings.background : true);
         setSubtitleOutline(settings.outline || false);
+        setSubtitleDelay(settings.delay !== undefined ? settings.delay : 0);
       }
     } catch (error) {
       console.error('Error loading subtitle settings:', error);
     }
+  };
+
+  // Save subtitle settings whenever they change
+  useEffect(() => {
+    const saveSubtitleSettings = async () => {
+      try {
+        const settings = {
+          color: subtitleColor,
+          size: subtitleSize,
+          position: subtitlePosition,
+          font: subtitleFont,
+          shadow: subtitleShadow,
+          background: subtitleBackground,
+          outline: subtitleOutline,
+          delay: subtitleDelay,
+        };
+        await AsyncStorage.setItem(SUBTITLE_SETTINGS_KEY, JSON.stringify(settings));
+      } catch (error) {
+        console.error('Error saving subtitle settings:', error);
+      }
+    };
+    saveSubtitleSettings();
+  }, [subtitleColor, subtitleSize, subtitlePosition, subtitleFont, subtitleShadow, subtitleBackground, subtitleOutline, subtitleDelay]);
+
+  /**
+   * Sort subtitle tracks by language priority: English first, then Arabic, then others
+   * "Off" option always stays first
+   * @param {Array} tracks - Array of subtitle tracks
+   * @returns {Array} Sorted array of subtitle tracks
+   */
+  const sortSubtitleTracksByPriority = (tracks) => {
+    if (!tracks || tracks.length === 0) return tracks;
+    
+    // Separate "Off" option from other tracks
+    const offTrack = tracks.find(track => track.id === 'none');
+    const otherTracks = tracks.filter(track => track.id !== 'none');
+    
+    // Sort other tracks by language priority
+    const sortedTracks = otherTracks.sort((a, b) => {
+      // Get language code/number from track - check both language and name fields
+      const langA = ((a.language || '') + ' ' + (a.name || '')).toLowerCase().trim();
+      const langB = ((b.language || '') + ' ' + (b.name || '')).toLowerCase().trim();
+      
+      // Priority: English (en, eng, english) > Arabic (ar, ara, arabic) > Others
+      const getPriority = (lang) => {
+        // Check for English - more specific patterns first
+        if (lang.match(/\b(english|eng|en)\b/) || lang.startsWith('en') || lang.includes('english')) {
+          return 1; // English - highest priority
+        }
+        // Check for Arabic - more specific patterns first
+        if (lang.match(/\b(arabic|ara|ar)\b/) || lang.startsWith('ar') || lang.includes('arabic')) {
+          return 2; // Arabic - second priority
+        }
+        return 3; // Others - lowest priority
+      };
+      
+      const priorityA = getPriority(langA);
+      const priorityB = getPriority(langB);
+      
+      // If priorities are different, sort by priority
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+      
+      // If same priority, sort alphabetically by name (if available) or language
+      const nameA = (a.name || a.language || '').toLowerCase();
+      const nameB = (b.name || b.language || '').toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+    
+    // Return "Off" first, then sorted tracks
+    return offTrack ? [offTrack, ...sortedTracks] : sortedTracks;
+  };
+
+  /**
+   * Group subtitle tracks by language
+   * @param {Array} tracks - Array of subtitle tracks
+   * @returns {Object} Object with language as key and array of tracks as value
+   */
+  const groupTracksByLanguage = (tracks) => {
+    if (!tracks || tracks.length === 0) return {};
+    
+    const groups = {};
+    
+    tracks.forEach((track) => {
+      // Skip "Off" option - it will be handled separately
+      if (track.id === 'none') {
+        return;
+      }
+      
+      // Extract language from track
+      const lang = track.language || '';
+      const name = track.name || '';
+      
+      // Try to determine language from name or language field
+      let languageKey = 'Unknown';
+      const langLower = lang.toLowerCase();
+      const nameLower = name.toLowerCase();
+      
+      // Check for common languages - prioritize exact matches in language field
+      // First check language field (more reliable)
+      if (lang) {
+        const langClean = lang.toLowerCase().trim();
+        // Check for exact language codes first
+        if (langClean === 'en' || langClean === 'eng' || langClean === 'english') {
+          languageKey = 'English';
+        } else if (langClean === 'ar' || langClean === 'ara' || langClean === 'arabic') {
+          languageKey = 'Arabic';
+        } else if (langClean === 'es' || langClean === 'spa' || langClean === 'spanish') {
+          languageKey = 'Spanish';
+        } else if (langClean === 'fr' || langClean === 'fre' || langClean === 'french') {
+          languageKey = 'French';
+        } else if (langClean === 'de' || langClean === 'ger' || langClean === 'german') {
+          languageKey = 'German';
+        } else if (langClean === 'it' || langClean === 'ita' || langClean === 'italian') {
+          languageKey = 'Italian';
+        } else if (langClean === 'pt' || langClean === 'por' || langClean === 'portuguese') {
+          languageKey = 'Portuguese';
+        } else if (langClean === 'ja' || langClean === 'jpn' || langClean === 'japanese') {
+          languageKey = 'Japanese';
+        } else if (langClean === 'ko' || langClean === 'kor' || langClean === 'korean') {
+          languageKey = 'Korean';
+        } else if (langClean === 'zh' || langClean === 'chi' || langClean === 'chinese') {
+          languageKey = 'Chinese';
+        } else if (langClean === 'ru' || langClean === 'rus' || langClean === 'russian') {
+          languageKey = 'Russian';
+        } else if (langClean === 'hi' || langClean === 'hin' || langClean === 'hindi') {
+          languageKey = 'Hindi';
+        } else if (langClean.includes('en')) {
+          languageKey = 'English';
+        } else if (langClean.includes('ar')) {
+          languageKey = 'Arabic';
+        } else {
+          // Use language code as-is if it's a known format
+          languageKey = lang.length <= 3 ? lang.toUpperCase() : 'Unknown';
+        }
+      }
+      
+      // If language wasn't determined from language field, check name field
+      if (languageKey === 'Unknown' && name) {
+        if (nameLower.includes('english') || nameLower.includes('eng')) {
+          languageKey = 'English';
+        } else if (nameLower.includes('arabic') || nameLower.includes('ara')) {
+          languageKey = 'Arabic';
+        } else if (nameLower.includes('spanish') || nameLower.includes('spa')) {
+          languageKey = 'Spanish';
+        } else if (nameLower.includes('french') || nameLower.includes('fre')) {
+          languageKey = 'French';
+        } else if (nameLower.includes('german') || nameLower.includes('ger')) {
+          languageKey = 'German';
+        } else if (nameLower.includes('italian') || nameLower.includes('ita')) {
+          languageKey = 'Italian';
+        } else if (nameLower.includes('portuguese') || nameLower.includes('por')) {
+          languageKey = 'Portuguese';
+        } else if (nameLower.includes('japanese') || nameLower.includes('jpn')) {
+          languageKey = 'Japanese';
+        } else if (nameLower.includes('korean') || nameLower.includes('kor')) {
+          languageKey = 'Korean';
+        } else if (nameLower.includes('chinese') || nameLower.includes('chi')) {
+          languageKey = 'Chinese';
+        } else if (nameLower.includes('russian') || nameLower.includes('rus')) {
+          languageKey = 'Russian';
+        } else if (nameLower.includes('hindi') || nameLower.includes('hin')) {
+          languageKey = 'Hindi';
+        } else {
+          // Try to extract language from name (first word before dash or space)
+          const nameParts = name.split(/[- ]/);
+          const firstPart = nameParts[0]?.trim();
+          if (firstPart && firstPart.length > 0) {
+            // Capitalize first letter
+            languageKey = firstPart.charAt(0).toUpperCase() + firstPart.slice(1).toLowerCase();
+          }
+        }
+      }
+      
+      if (!groups[languageKey]) {
+        groups[languageKey] = [];
+      }
+      groups[languageKey].push(track);
+    });
+    
+    return groups;
+  };
+
+  /**
+   * Get language display name for a language group
+   * @param {string} languageKey - Language key
+   * @param {Array} tracks - Array of tracks in this language group
+   * @returns {string} Display name for the language
+   */
+  const getLanguageDisplayName = (languageKey, tracks) => {
+    // Always show language name with count
+    return languageKey;
+  };
+
+  /**
+   * Get sorted language groups by priority
+   * @param {Object} languageGroups - Object with language as key and array of tracks as value
+   * @returns {Array} Sorted array of [languageKey, tracks] pairs
+   */
+  const getSortedLanguageGroups = (languageGroups) => {
+    const groups = Object.entries(languageGroups);
+    
+    // Sort by priority: English > Arabic > Others
+    const getPriority = (langKey) => {
+      const lang = langKey.toLowerCase();
+      if (lang.includes('english') || lang.includes('en')) return 1;
+      if (lang.includes('arabic') || lang.includes('ar')) return 2;
+      return 3;
+    };
+    
+    return groups.sort((a, b) => {
+      const priorityA = getPriority(a[0]);
+      const priorityB = getPriority(b[0]);
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+      return a[0].localeCompare(b[0]);
+    });
   };
 
   const controlsTimeoutRef = useRef(null);
@@ -356,15 +726,24 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const bottomControlsOpacity = useRef(new Animated.Value(showControls ? 1 : 0)).current;
   const bottomControlsTranslateY = useRef(new Animated.Value(showControls ? 0 : 50)).current;
   
+  // Animation value for subtitle position (moves up when controls appear)
+  // Position above bottom controls: ~120px when controls visible, ~60px when hidden
+  // Accounts for bottom controls height (~120px) + padding + safe area
+  const subtitleBottomPosition = useRef(new Animated.Value(showControls ? 120 : 60)).current;
+  
   // Animation values for subtitle modal
   const subtitleModalOpacity = useRef(new Animated.Value(0)).current;
   const subtitleModalTranslateY = useRef(new Animated.Value(20)).current;
   const subtitleButtonWidth = useRef(new Animated.Value(42)).current;
   
-  // Animation values for menu modal
-  const menuModalOpacity = useRef(new Animated.Value(0)).current;
-  const menuModalTranslateY = useRef(new Animated.Value(20)).current;
-  const menuModalDownwardTranslate = useRef(new Animated.Value(0)).current;
+  // Animation values for fullscreen subtitle settings modal (Netflix-style)
+  const subtitleSettingsModalOpacity = useRef(new Animated.Value(0)).current;
+  const subtitleSettingsModalScale = useRef(new Animated.Value(0.95)).current;
+  
+  // Animation values for fullscreen audio settings modal (Netflix-style)
+  const audioSettingsModalOpacity = useRef(new Animated.Value(0)).current;
+  const audioSettingsModalScale = useRef(new Animated.Value(0.95)).current;
+  
   
   // Animation values for server modal
   const serverModalOpacity = useRef(new Animated.Value(0)).current;
@@ -459,21 +838,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
 
   useEffect(() => {
-    const setupAudio = async () => {
-      try {
-        // Configure audio mode for video playback
-        await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-          playThroughEarpieceAndroid: false,
-        });
-      } catch (error) {
-        console.error('Error setting audio mode:', error);
-      }
-    };
-
-    setupAudio();
+    // expo-video handles audio mode automatically
     fetchStreamUrl();
 
     // Auto-hide controls after 3 seconds
@@ -501,51 +866,103 @@ export default function VideoPlayerScreen({ route, navigation }) {
     hasAutoPlayed.current = false;
   }, [streamUrl]);
 
-  // Auto-play when streamUrl is set (immediately after URL extraction)
+  // Auto-play when streamUrl is set (wait for replaceAsync to complete)
   useEffect(() => {
-    if (streamUrl) {
+    if (streamUrl && player) {
       const autoPlay = async () => {
+        // Wait for replace to complete if it's in progress
+        let waitCount = 0;
+        while (isReplacingRef.current && waitCount < 100) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          waitCount++;
+        }
+        
+        // If replace is still in progress after waiting, skip auto-play
+        if (isReplacingRef.current) {
+          console.log('Replace still in progress, skipping auto-play');
+          return;
+        }
+        
+        // Skip if already auto-played
+        if (hasAutoPlayed.current) {
+          console.log('Already auto-played, skipping');
+          return;
+        }
+        
         // Try multiple times with increasing delays to ensure video starts
-        const attempts = [200, 500, 1000, 2000, 3000];
+        const attempts = [400, 800, 1500, 2500, 4000];
         
         for (const delay of attempts) {
           await new Promise(resolve => setTimeout(resolve, delay));
           
-          if (videoRef.current) {
+          // Check if replace started during wait
+          if (isReplacingRef.current) {
+            console.log('Replace started during auto-play, aborting');
+            return;
+          }
+          
+          if (player) {
             try {
-              const status = await videoRef.current.getStatusAsync();
+              const currentStatus = player.status;
               
-              if (status.isLoaded && !status.isPlaying) {
-                console.log(`Attempting to play video (${delay}ms delay)`);
-                await videoRef.current.setVolumeAsync(volume);
-                await videoRef.current.setIsMutedAsync(isMuted);
-                await videoRef.current.playAsync();
+              // Check if player is ready and not already playing
+              if (currentStatus === 'readyToPlay' && !player.playing) {
+                console.log(`Attempting to play video (${delay}ms delay, status: ${currentStatus})`);
+                player.volume = volume;
+                player.muted = isMuted;
+                player.play();
                 setIsPlaying(true);
                 
                 // Verify it started playing
-                await new Promise(resolve => setTimeout(resolve, 300));
-                const newStatus = await videoRef.current.getStatusAsync();
-                if (newStatus.isPlaying) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if (player.playing) {
                   hasAutoPlayed.current = true;
                   console.log('Video auto-played successfully');
                   break; // Success, exit loop
+                } else if (player.status === 'readyToPlay') {
+                  // Try one more time if still ready
+                  console.log('Retrying play...');
+                  player.play();
+                  await new Promise(resolve => setTimeout(resolve, 400));
+                  if (player.playing) {
+                    hasAutoPlayed.current = true;
+                    console.log('Video auto-played successfully (second attempt)');
+                    break;
+                  }
                 }
-              } else if (status.isPlaying) {
+              } else if (player.playing) {
                 hasAutoPlayed.current = true;
                 console.log('Video already playing');
                 break;
+              } else if (currentStatus === 'error') {
+                console.error('Player status is error, cannot play');
+                setError('Video player error. Please try again.');
+                setLoading(false);
+                break;
+              } else if (currentStatus === 'loading') {
+                // Still loading, continue waiting
+                console.log(`Player still loading (${delay}ms delay)`);
+                continue;
               }
             } catch (error) {
               console.error(`Error auto-playing video (attempt ${delay}ms):`, error);
-              // Continue to next attempt
+              // Continue to next attempt unless it's a critical error
+              if (error.message && error.message.includes('not ready')) {
+                continue;
+              }
             }
           }
         }
       };
       
+      // Delay auto-play to ensure replaceAsync has time to start
+      const timeoutId = setTimeout(() => {
       autoPlay();
+      }, 500);
+      
+      return () => clearTimeout(timeoutId);
     }
-  }, [streamUrl, volume, isMuted]);
+  }, [streamUrl, volume, isMuted, player]);
 
   // Update slider progress when position changes
   useEffect(() => {
@@ -575,9 +992,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
     isSpeedExpandedRef.current = isSpeedExpanded;
   }, [isSpeedExpanded]);
 
-  // Collapse speed and subtitle options when controls are hidden
+  // Collapse speed and subtitle options when controls are hidden (but keep fullscreen modal open)
   useEffect(() => {
-    if (!showControls) {
+    if (!showControls && !showSubtitleSettingsModal && !showAudioSettingsModal) {
       if (isSpeedExpanded) {
         setIsSpeedExpanded(false);
         Animated.spring(speedButtonWidth, {
@@ -590,18 +1007,15 @@ export default function VideoPlayerScreen({ route, navigation }) {
       if (isSubtitleExpanded) {
         setIsSubtitleExpanded(false);
       }
-      if (isMenuExpanded) {
-        setIsMenuExpanded(false);
-      }
       if (isSubtitleSearchMode) {
         setIsSubtitleSearchMode(false);
       }
     }
-  }, [showControls, isSpeedExpanded, isSubtitleExpanded, isMenuExpanded, isSubtitleSearchMode]);
+  }, [showControls, isSpeedExpanded, isSubtitleExpanded, isSubtitleSearchMode, isAppearanceMode, isDelayMode, showSubtitleSettingsModal, showAudioSettingsModal]);
 
   // Disable controls auto-hide when any modal is active
   useEffect(() => {
-    const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode || isServerExpanded;
+    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal;
     
     if (hasActiveModal) {
       // Clear any existing timer when modal opens
@@ -619,7 +1033,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
         startControlsTimer();
       }
     }
-  }, [isSubtitleExpanded, isMenuExpanded, isSubtitleSearchMode, isServerExpanded, showControls, isControlsLocked]);
+  }, [isSubtitleExpanded, isSubtitleSearchMode, isAppearanceMode, isServerExpanded, showControls, isControlsLocked]);
 
   // Animate subtitle modal appearance/disappearance
   useEffect(() => {
@@ -656,6 +1070,78 @@ export default function VideoPlayerScreen({ route, navigation }) {
     }
   }, [isSubtitleExpanded]);
 
+  // Animate fullscreen subtitle settings modal (Netflix-style)
+  useEffect(() => {
+    const duration = 300;
+    
+    if (showSubtitleSettingsModal) {
+      // Fade in and scale up
+      Animated.parallel([
+        Animated.timing(subtitleSettingsModalOpacity, {
+          toValue: 1,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.spring(subtitleSettingsModalScale, {
+          toValue: 1,
+          tension: 50,
+          friction: 7,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      // Fade out and scale down
+      Animated.parallel([
+        Animated.timing(subtitleSettingsModalOpacity, {
+          toValue: 0,
+          duration: duration * 0.7,
+          useNativeDriver: true,
+        }),
+        Animated.timing(subtitleSettingsModalScale, {
+          toValue: 0.95,
+          duration: duration * 0.7,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [showSubtitleSettingsModal]);
+
+  // Animate fullscreen audio settings modal (Netflix-style)
+  useEffect(() => {
+    const duration = 300;
+    
+    if (showAudioSettingsModal) {
+      // Fade in and scale up
+      Animated.parallel([
+        Animated.timing(audioSettingsModalOpacity, {
+          toValue: 1,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.spring(audioSettingsModalScale, {
+          toValue: 1,
+          tension: 50,
+          friction: 7,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      // Fade out and scale down
+      Animated.parallel([
+        Animated.timing(audioSettingsModalOpacity, {
+          toValue: 0,
+          duration: duration * 0.7,
+          useNativeDriver: true,
+        }),
+        Animated.timing(audioSettingsModalScale, {
+          toValue: 0.95,
+          duration: duration * 0.7,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [showAudioSettingsModal]);
+
   // Animate server modal appearance/disappearance
   useEffect(() => {
     const duration = 200; // Fast but smooth
@@ -691,67 +1177,6 @@ export default function VideoPlayerScreen({ route, navigation }) {
     }
   }, [isServerExpanded]);
 
-  // Animate menu modal appearance/disappearance and size changes
-  useEffect(() => {
-    const duration = 200; // Fast but smooth
-    
-    if (isMenuExpanded) {
-      // Slide up and fade in
-      Animated.parallel([
-        Animated.timing(menuModalOpacity, {
-          toValue: 1,
-          duration,
-          useNativeDriver: true,
-        }),
-        Animated.timing(menuModalTranslateY, {
-          toValue: 0,
-          duration,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    } else {
-      // Slide down and fade out
-      Animated.parallel([
-        Animated.timing(menuModalOpacity, {
-          toValue: 0,
-          duration,
-          useNativeDriver: true,
-        }),
-        Animated.timing(menuModalTranslateY, {
-          toValue: 20,
-          duration,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    }
-  }, [isMenuExpanded]);
-
-  // Animate menu modal size and position when switching to subtitle search mode
-  useEffect(() => {
-    // Enable LayoutAnimation on Android
-    if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-      UIManager.setLayoutAnimationEnabledExperimental(true);
-    }
-    
-    LayoutAnimation.configureNext({
-      duration: 250,
-      create: {
-        type: LayoutAnimation.Types.easeInEaseOut,
-        property: LayoutAnimation.Properties.opacity,
-      },
-      update: {
-        type: LayoutAnimation.Types.easeInEaseOut,
-      },
-    });
-    
-    // Animate downward movement - move down when expanding (less downward movement)
-    Animated.spring(menuModalDownwardTranslate, {
-      toValue: isSubtitleSearchMode ? 150 : 0,
-      useNativeDriver: true,
-      tension: 50,
-      friction: 7,
-    }).start();
-  }, [isSubtitleSearchMode]);
 
   // Animate controls appearance/disappearance
   useEffect(() => {
@@ -799,6 +1224,12 @@ export default function VideoPlayerScreen({ route, navigation }) {
             useNativeDriver: true,
           }),
         ]),
+        // Subtitles - move up when controls appear
+        Animated.timing(subtitleBottomPosition, {
+          toValue: 120, // Position above bottom controls (height: ~120px + padding: 20px + safe area)
+          duration,
+          useNativeDriver: false, // Cannot use native driver for bottom position
+        }),
       ]).start();
     } else {
       // Slide down and fade out
@@ -842,6 +1273,12 @@ export default function VideoPlayerScreen({ route, navigation }) {
             useNativeDriver: true,
           }),
         ]),
+        // Subtitles - move down when controls hide
+        Animated.timing(subtitleBottomPosition, {
+          toValue: 60, // Lower position when controls are hidden (closer to bottom but still visible)
+          duration,
+          useNativeDriver: false, // Cannot use native driver for bottom position
+        }),
       ]).start();
     }
   }, [showControls, isControlsLocked]);
@@ -851,7 +1288,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
       clearTimeout(controlsTimeoutRef.current);
     }
     // Don't auto-hide controls if any modal is active
-    const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode || isServerExpanded;
+    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal;
     if (!isControlsLocked && showControls && !hasActiveModal) {
       controlsTimeoutRef.current = setTimeout(() => {
         setShowControls(false);
@@ -863,7 +1300,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
     if (!isControlsLocked) {
       setShowControls(true);
       // Don't start timer if any modal is active
-      const hasActiveModal = isSubtitleExpanded || isMenuExpanded || isSubtitleSearchMode || isServerExpanded;
+      const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal;
       if (!hasActiveModal) {
       startControlsTimer();
       }
@@ -945,6 +1382,33 @@ export default function VideoPlayerScreen({ route, navigation }) {
       if (localVideoPath) {
         // Use downloaded video
         console.log('Using downloaded video:', localVideoPath);
+        
+        // Verify the file still exists before using it
+        try {
+          const fileInfo = await FileSystem.getInfoAsync(localVideoPath);
+          if (!fileInfo.exists) {
+            console.error('Downloaded video file does not exist:', localVideoPath);
+            setError('Downloaded video file not found. Please re-download.');
+            setLoading(false);
+            return;
+          }
+          
+          console.log('Downloaded video file exists, size:', fileInfo.size, 'bytes');
+          
+          // For M3U8 files, ensure the file path is properly formatted
+          // expo-video should support local file:// URIs
+          if (localVideoPath.toLowerCase().endsWith('.m3u8')) {
+            console.log('Playing local M3U8 playlist:', localVideoPath);
+            // The playlist should contain absolute file:// URIs for segments
+            // Verify playlist can be read
+            try {
+              const playlistContent = await FileSystem.readAsStringAsync(localVideoPath);
+              console.log('M3U8 playlist content preview (first 500 chars):', playlistContent.substring(0, 500));
+            } catch (readError) {
+              console.error('Error reading M3U8 playlist:', readError);
+            }
+          }
+          
         setStreamUrl(localVideoPath);
         
         // Set up subtitle tracks from downloaded data if available
@@ -954,7 +1418,14 @@ export default function VideoPlayerScreen({ route, navigation }) {
         if (downloadedData && downloadedData.subtitles && downloadedData.subtitles.length > 0) {
           tracks.push(...downloadedData.subtitles);
         }
-        setSubtitleTracks(tracks);
+          // Sort tracks by priority: English first, then Arabic, then others
+          const sortedTracks = sortSubtitleTracksByPriority(tracks);
+          setSubtitleTracks(sortedTracks);
+        } catch (fileError) {
+          console.error('Error checking downloaded video file:', fileError);
+          setError('Error accessing downloaded video. Please try re-downloading.');
+          setLoading(false);
+        }
       } else {
         // Fetch from streaming service
         // Get the selected video source
@@ -980,7 +1451,44 @@ export default function VideoPlayerScreen({ route, navigation }) {
             { id: 'none', name: 'Off', language: null, url: null },
             ...result.subtitles,
           ];
-          setSubtitleTracks(tracks);
+          // Sort tracks by priority: English first, then Arabic, then others
+          const sortedTracks = sortSubtitleTracksByPriority(tracks);
+          setSubtitleTracks(sortedTracks);
+          
+          // Extract audio tracks from M3U8 playlist if it's an HLS stream
+          if (result.streamUrl.includes('.m3u8') || result.streamUrl.includes('/playlist/')) {
+            try {
+              console.log('[VideoPlayerScreen] Extracting audio tracks from M3U8 playlist:', result.streamUrl);
+              const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+                'Referer': new URL(result.streamUrl).origin,
+                'Origin': new URL(result.streamUrl).origin,
+              };
+              const parsed = await M3U8Parser.fetchAndParse(result.streamUrl, headers);
+              if (parsed.audioTracks && parsed.audioTracks.length > 0) {
+                console.log('[VideoPlayerScreen] Found audio tracks:', parsed.audioTracks.length);
+                setAudioTracks(parsed.audioTracks);
+                // Set first audio track as default
+                if (parsed.audioTracks.length > 0) {
+                  setSelectedAudioTrack(parsed.audioTracks[0]);
+                }
+              } else {
+                console.log('[VideoPlayerScreen] No audio tracks found in M3U8 playlist');
+                // Set default audio track
+                setAudioTracks([{ id: 'default', name: 'Default', language: 'unknown', groupId: null, uri: null }]);
+                setSelectedAudioTrack({ id: 'default', name: 'Default', language: 'unknown', groupId: null, uri: null });
+              }
+            } catch (audioError) {
+              console.error('[VideoPlayerScreen] Error extracting audio tracks:', audioError);
+              // Set default audio track on error
+              setAudioTracks([{ id: 'default', name: 'Default', language: 'unknown', groupId: null, uri: null }]);
+              setSelectedAudioTrack({ id: 'default', name: 'Default', language: 'unknown', groupId: null, uri: null });
+            }
+          } else {
+            // For non-HLS streams, set default audio track
+            setAudioTracks([{ id: 'default', name: 'Default', language: 'unknown', groupId: null, uri: null }]);
+            setSelectedAudioTrack({ id: 'default', name: 'Default', language: 'unknown', groupId: null, uri: null });
+          }
           
           // Store server list and current server for Vidfast
           if (source === 'vidfast' && result.serverList) {
@@ -1048,47 +1556,45 @@ export default function VideoPlayerScreen({ route, navigation }) {
     return cues;
   };
 
-  // Update current subtitle text based on position
+  // Update current subtitle text based on position (with delay applied)
   useEffect(() => {
     if (selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' && subtitleCuesRef.current.length > 0) {
+      // Apply delay to position (delay can be negative to show earlier, positive to show later)
+      const adjustedPosition = position + subtitleDelay;
       const currentCue = subtitleCuesRef.current.find(
-        cue => position >= cue.startTime && position <= cue.endTime
+        cue => adjustedPosition >= cue.startTime && adjustedPosition <= cue.endTime
       );
       setCurrentSubtitleText(currentCue ? currentCue.text : '');
     } else {
       setCurrentSubtitleText('');
     }
-  }, [position, selectedSubtitleTrack]);
+  }, [position, selectedSubtitleTrack, subtitleDelay]);
 
-  const handlePlaybackStatus = async (status) => {
-    if (status.isLoaded) {
-      const newPosition = status.positionMillis || 0;
-      const newDuration = status.durationMillis || 0;
-      
+  // Handle playback progress updates using interval (expo-video doesn't have onProgressUpdate with detailed info)
+  useEffect(() => {
+    if (!player || !streamUrl) return;
+    
+    const interval = setInterval(() => {
+      try {
+        // Check if player is loaded and has valid properties
+        // expo-video player.status can be 'idle', 'loading', 'readyToPlay', or 'error'
+        if (player.status === 'readyToPlay' || player.playing) {
+          const currentTimeSeconds = player.currentTime || 0;
+          const durationSeconds = player.duration || 0;
+          const newPosition = currentTimeSeconds * 1000; // Convert to milliseconds
+          const newDuration = durationSeconds * 1000; // Convert to milliseconds
+          
+          if (newDuration > 0) {
       positionRef.current = newPosition;
       durationRef.current = newDuration;
       setPosition(newPosition);
       setDuration(newDuration);
-      setIsPlaying(status.isPlaying || false);
+            setIsPlaying(player.playing || false);
 
       // Hide loading screen only when video has reached at least 1 second (00:00:01)
       // This ensures the video has actually started playing before hiding the backdrop
       if (loading && newPosition >= 1000) {
         setLoading(false);
-      }
-
-      // Seek to resume position when video first loads
-      if (resumePosition && resumePosition > 0 && !hasSeekedToResumePosition.current && newDuration > 0) {
-        hasSeekedToResumePosition.current = true;
-        if (videoRef.current) {
-          await videoRef.current.setPositionAsync(resumePosition);
-          setPosition(resumePosition);
-          positionRef.current = resumePosition;
-          // If resuming to a position > 1 second, hide loading immediately
-          if (resumePosition >= 1000) {
-            setLoading(false);
-          }
-        }
       }
 
       // Check if episode is in the last 4 minutes and show next episode button
@@ -1101,8 +1607,12 @@ export default function VideoPlayerScreen({ route, navigation }) {
           setShowNextEpisodeButton(false);
         }
       }
-    }
-    if (status.isLoaded && status.didJustFinish) {
+            
+            // Check if video finished (only check once)
+            if (newDuration > 0 && newPosition >= newDuration - 100 && !hasVideoFinished.current) {
+              // Video finished (within 100ms of end) - use flag to prevent multiple triggers
+              hasVideoFinished.current = true;
+              setTimeout(async () => {
       // Remove progress when video finishes
       if (item && item.id) {
         const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
@@ -1113,34 +1623,44 @@ export default function VideoPlayerScreen({ route, navigation }) {
         }
       }
       navigation.goBack();
-    }
-  };
+              }, 500);
+            }
+          }
+        }
+      } catch (error) {
+        // Silently handle errors in progress updates
+        console.error('Error updating progress:', error);
+      }
+    }, 250); // Update every 250ms for better performance
+    
+    return () => clearInterval(interval);
+  }, [player, loading, episode, season, episodeNumber, nextEpisode, streamUrl, item, navigation]);
 
   const togglePlayPause = async () => {
     resetControlsTimer();
-    if (videoRef.current) {
+    if (player) {
       if (isPlaying) {
-        await videoRef.current.pauseAsync();
+        player.pause();
       } else {
         // Ensure volume and mute state are set before playing
-        await videoRef.current.setVolumeAsync(volume);
-        await videoRef.current.setIsMutedAsync(isMuted);
-        await videoRef.current.playAsync();
+        player.volume = volume;
+        player.muted = isMuted;
+        player.play();
       }
     }
   };
 
   const seek = async (seconds) => {
     resetControlsTimer();
-    if (videoRef.current) {
-      const newPosition = Math.max(0, Math.min(position + seconds * 1000, duration));
-      await videoRef.current.setPositionAsync(newPosition);
+    if (player) {
+      const newPosition = Math.max(0, Math.min((position + seconds * 1000) / 1000, duration / 1000));
+      player.currentTime = newPosition;
     }
   };
 
   const seekTo = async (milliseconds) => {
-    if (videoRef.current) {
-      await videoRef.current.setPositionAsync(milliseconds);
+    if (player) {
+      player.currentTime = milliseconds / 1000; // Convert to seconds
     }
   };
 
@@ -1193,8 +1713,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const changePlaybackRate = async (rate, shouldCollapse = true) => {
     resetControlsTimer();
     setPlaybackRate(rate);
-    if (videoRef.current) {
-      await videoRef.current.setRateAsync(rate, true);
+    if (player) {
+      player.playbackRate = rate;
     }
     // Collapse after selection (unless it's a swipe)
     if (shouldCollapse) {
@@ -1223,9 +1743,6 @@ export default function VideoPlayerScreen({ route, navigation }) {
         friction: 7,
       }).start();
       }
-      if (isMenuExpanded) {
-        setIsMenuExpanded(false);
-      }
       if (isServerExpanded) {
         setIsServerExpanded(false);
       }
@@ -1243,13 +1760,64 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   const toggleSubtitleMenu = () => {
     resetControlsTimer();
-    setIsSubtitleExpanded(!isSubtitleExpanded);
-    if (isMenuExpanded) {
-      setIsMenuExpanded(false);
+    // Show fullscreen subtitle settings modal (Netflix-style)
+    setShowSubtitleSettingsModal(true);
+    // Hide other modals
+    setIsSubtitleExpanded(false);
+    if (isServerExpanded) {
+      setIsServerExpanded(false);
+    }
+    if (showAudioSettingsModal) {
+      setShowAudioSettingsModal(false);
+    }
+    // Hide controls when subtitle settings modal is shown
+    setShowControls(false);
+  };
+
+  const toggleAudioSettingsModal = () => {
+    resetControlsTimer();
+    // Show fullscreen audio settings modal (Netflix-style)
+    setShowAudioSettingsModal(true);
+    // Hide other modals
+    setIsSpeedExpanded(false);
+    if (isSubtitleExpanded) {
+      setIsSubtitleExpanded(false);
     }
     if (isServerExpanded) {
       setIsServerExpanded(false);
     }
+    if (showSubtitleSettingsModal) {
+      setShowSubtitleSettingsModal(false);
+    }
+    // Hide controls when audio settings modal is shown
+    setShowControls(false);
+  };
+
+  const closeAudioSettingsModal = () => {
+    setShowAudioSettingsModal(false);
+    // Show controls again after closing
+    resetControlsTimer();
+  };
+
+  const selectAudioTrack = (track) => {
+    resetControlsTimer();
+    setSelectedAudioTrack(track);
+    // Note: expo-video doesn't have a direct API for selecting audio tracks
+    // Audio track selection is typically handled at the HLS playlist level
+    // For now, we'll just update the UI state
+    console.log('[VideoPlayerScreen] Selected audio track:', track);
+  };
+
+  const closeSubtitleSettingsModal = () => {
+    setShowSubtitleSettingsModal(false);
+    setIsSubtitleSearchMode(false);
+    setIsAppearanceMode(false);
+    setIsDelayMode(false);
+    setExpandedLanguageGroup(null);
+    setSubtitleSearchResults([]);
+    setSubtitleSearchQuery('');
+    // Show controls again after closing
+    resetControlsTimer();
   };
 
   const toggleServerMenu = () => {
@@ -1258,30 +1826,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
     if (isSubtitleExpanded) {
       setIsSubtitleExpanded(false);
     }
-    if (isMenuExpanded) {
-      setIsMenuExpanded(false);
-    }
   };
 
-  const toggleMenu = () => {
-    resetControlsTimer();
-    const newExpanded = !isMenuExpanded;
-    setIsMenuExpanded(newExpanded);
-    if (isSubtitleExpanded) {
-      setIsSubtitleExpanded(false);
-    }
-    if (isServerExpanded) {
-      setIsServerExpanded(false);
-    }
-    // Reset subtitle search mode when closing menu
-    if (!newExpanded && isSubtitleSearchMode) {
-      setIsSubtitleSearchMode(false);
-    }
-  };
 
   const handleLoadSRT = () => {
     resetControlsTimer();
-    setIsMenuExpanded(false);
     // TODO: Implement SRT file picker
     console.log('Load SRT file');
     // This would typically open a file picker
@@ -1289,7 +1838,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   };
 
   const handleLoadSubtitlesOnline = async () => {
-    resetControlsTimer();
+    // Show search view within the same modal
     setIsSubtitleSearchMode(true);
     // Initialize search query with current movie/episode title
     // For episodes, try just the show title first (episode names can be too specific)
@@ -1328,7 +1877,6 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   const closeSubtitleSearch = () => {
     setIsSubtitleSearchMode(false);
-    setIsMenuExpanded(false);
     setSubtitleSearchResults([]);
     setSubtitleSearchQuery('');
   };
@@ -1337,6 +1885,22 @@ export default function VideoPlayerScreen({ route, navigation }) {
     setIsSubtitleSearchMode(false);
     setSubtitleSearchResults([]);
     setSubtitleSearchQuery('');
+  };
+
+  const handleOpenAppearance = () => {
+    setIsAppearanceMode(true);
+  };
+
+  const handleBackFromAppearance = () => {
+    setIsAppearanceMode(false);
+  };
+
+  const handleOpenDelay = () => {
+    setIsDelayMode(true);
+  };
+
+  const handleBackFromDelay = () => {
+    setIsDelayMode(false);
   };
 
   const searchSubtitles = async () => {
@@ -1392,13 +1956,28 @@ export default function VideoPlayerScreen({ route, navigation }) {
           content: fileContent, // Store the content
         };
         
-        // Set the new track as selected (this replaces the previous one)
+        // Add the new track to subtitle tracks list and select it
+        setSubtitleTracks((prevTracks) => {
+          // Check if track already exists
+          const existingIndex = prevTracks.findIndex(t => t.id === newTrack.id);
+          if (existingIndex >= 0) {
+            // Update existing track
+            const updatedTracks = [...prevTracks];
+            updatedTracks[existingIndex] = newTrack;
+            return sortSubtitleTracksByPriority(updatedTracks);
+          } else {
+            // Add new track and sort by priority
+            return sortSubtitleTracksByPriority([...prevTracks, newTrack]);
+          }
+        });
+        
+        // Set the new track as selected
         setSelectedSubtitleTrack(newTrack);
         
-        // Close the modals
+        // Go back to settings view
         setIsSubtitleSearchMode(false);
-        setIsMenuExpanded(false);
         setSubtitleSearchResults([]);
+        setSubtitleSearchQuery('');
         
         // Reset controls timer to show the new subtitle is active
         resetControlsTimer();
@@ -1445,8 +2024,15 @@ export default function VideoPlayerScreen({ route, navigation }) {
       setCurrentSubtitleText('');
     }
     
-    // Close menu after selection
-    setIsSubtitleExpanded(false);
+    // Don't close fullscreen modal - user might want to adjust settings
+  };
+
+  const toggleLanguageGroup = (languageKey) => {
+    if (expandedLanguageGroup === languageKey) {
+      setExpandedLanguageGroup(null);
+    } else {
+      setExpandedLanguageGroup(languageKey);
+    }
   };
 
   const handleSpeedSwipe = (dx) => {
@@ -1556,8 +2142,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
     resetControlsTimer();
     const newMuted = !isMuted;
     setIsMuted(newMuted);
-    if (videoRef.current) {
-      await videoRef.current.setIsMutedAsync(newMuted);
+    if (player) {
+      player.muted = newMuted;
     }
   };
 
@@ -1570,9 +2156,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
     } else if (isMuted && clampedVolume > 0) {
       setIsMuted(false);
     }
-    if (videoRef.current) {
-      await videoRef.current.setVolumeAsync(clampedVolume);
-      await videoRef.current.setIsMutedAsync(clampedVolume === 0);
+    if (player) {
+      player.volume = clampedVolume;
+      player.muted = clampedVolume === 0;
     }
   };
 
@@ -1984,66 +2570,45 @@ export default function VideoPlayerScreen({ route, navigation }) {
               },
             ]}
           >
-            <Video
-              ref={videoRef}
+            {player && streamUrl && (
+              <VideoView
+                player={player}
               style={styles.video}
-              source={{ uri: streamUrl }}
-              useNativeControls={false}
-              resizeMode={ResizeMode.CONTAIN}
-              shouldPlay={true}
-              rate={playbackRate}
-              volume={volume}
-              isMuted={isMuted}
-              onPlaybackStatusUpdate={handlePlaybackStatus}
-              onLoadStart={async () => {
+                contentFit="contain"
+                nativeControls={false}
+                allowsFullscreen={false}
+                onLoadStart={() => {
                 // Ensure audio is enabled when video loads
-                if (videoRef.current) {
+                  if (player) {
                   try {
-                    await videoRef.current.setVolumeAsync(volume);
-                    await videoRef.current.setIsMutedAsync(isMuted);
+                      player.volume = volume;
+                      player.muted = isMuted;
                   } catch (error) {
                     console.error('Error setting audio on load:', error);
                   }
                 }
               }}
-              onLoad={async () => {
-                // Auto-play when video is loaded - force play
-                if (videoRef.current && !hasAutoPlayed.current) {
-                  try {
-                    hasAutoPlayed.current = true;
-                    await videoRef.current.setVolumeAsync(volume);
-                    await videoRef.current.setIsMutedAsync(isMuted);
-                    // Force play multiple times to ensure it starts
-                    await videoRef.current.playAsync();
-                    setTimeout(async () => {
-                      if (videoRef.current) {
-                        const status = await videoRef.current.getStatusAsync();
-                        if (!status.isPlaying) {
-                          await videoRef.current.playAsync();
-                        }
-                      }
-                    }, 200);
-                    setIsPlaying(true);
-                    console.log('Video auto-played on load');
-                  } catch (error) {
-                    console.error('Error auto-playing on load:', error);
-                    hasAutoPlayed.current = false; // Allow retry
-                  }
-                }
-              }}
-              onReadyForDisplay={async () => {
-                // Also try to play when video is ready for display
-                if (videoRef.current && !hasAutoPlayed.current) {
-                  try {
-                    hasAutoPlayed.current = true;
-                    await videoRef.current.setVolumeAsync(volume);
-                    await videoRef.current.setIsMutedAsync(isMuted);
-                    await videoRef.current.playAsync();
-                    setIsPlaying(true);
-                    console.log('Video auto-played on ready for display');
-                  } catch (error) {
-                    console.error('Error auto-playing on ready:', error);
-                    hasAutoPlayed.current = false;
+                onLoad={() => {
+                  // Video loaded
+                  console.log('Video loaded');
+                }}
+                onPlayingChange={(isPlaying) => {
+                  setIsPlaying(isPlaying);
+                }}
+                onProgressUpdate={(event) => {
+                  // Progress updates are handled by the interval in useEffect
+                  // This callback can be used for more frequent updates if needed
+                  if (event.currentTime !== undefined && event.duration !== undefined) {
+                    const newPosition = event.currentTime * 1000; // Convert to milliseconds
+                    const newDuration = event.duration * 1000; // Convert to milliseconds
+                    positionRef.current = newPosition;
+                    durationRef.current = newDuration;
+                    setPosition(newPosition);
+                    setDuration(newDuration);
+                    
+                    // Hide loading when video starts playing
+                    if (loading && newPosition >= 1000) {
+                      setLoading(false);
                   }
                 }
               }}
@@ -2052,6 +2617,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                 setError('Video playback error');
               }}
             />
+            )}
           </Animated.View>
 
           {/* Dim Overlay */}
@@ -2068,6 +2634,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
             style={styles.controlsOverlay}
             activeOpacity={1}
             onPress={(evt) => {
+              // Don't toggle controls if subtitle settings modal is open
+              if (showSubtitleSettingsModal) {
+                return;
+              }
+              
               const now = Date.now();
               const timeSinceLastTap = now - lastTapTime.current;
               
@@ -2083,9 +2654,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
               
               lastTapTime.current = now;
             }}
-            disabled={isMenuExpanded && isSubtitleSearchMode}
+            disabled={showSubtitleSettingsModal || showAudioSettingsModal}
           >
-            {!isControlsLocked && (
+            {!isControlsLocked && !showSubtitleSettingsModal && !showAudioSettingsModal && (
               <>
                 {/* Top Bar */}
                 <Animated.View 
@@ -2109,22 +2680,22 @@ export default function VideoPlayerScreen({ route, navigation }) {
                       </BlurView>
                     </TouchableOpacity>
                     
-                    <View style={styles.titleContainer}>
-                      {episodeInfo && (
-                        <Text style={styles.episodeNumber}>{episodeInfo}</Text>
-                      )}
-                      {logoUrl && !episode ? (
+                    {(logoUrl && !episode) ? (
                         <CachedImage
                           source={{ uri: logoUrl }}
                           style={styles.titleLogo}
                           resizeMode="contain"
                         />
                       ) : (
+                      <View style={styles.titleContainer}>
+                        {episodeInfo && (
+                          <Text style={styles.episodeNumber}>{episodeInfo}</Text>
+                        )}
                         <Text style={styles.titleText} numberOfLines={1}>
                           {item?.title || item?.name || 'Video'}
                         </Text>
+                      </View>
                       )}
-                    </View>
                   </View>
 
                   <View style={styles.topRight}>
@@ -2180,6 +2751,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                 </Animated.View>
 
                 {/* Center Controls */}
+                {!showSubtitleSettingsModal && !showAudioSettingsModal && (
                 <Animated.View 
                   style={[
                     styles.centerControls,
@@ -2232,8 +2804,10 @@ export default function VideoPlayerScreen({ route, navigation }) {
                     </BlurView>
                   </TouchableOpacity>
                 </Animated.View>
+                )}
 
                 {/* Bottom Controls */}
+                {!showSubtitleSettingsModal && !showAudioSettingsModal && (
                 <Animated.View 
                   style={[
                     styles.bottomControls,
@@ -2272,18 +2846,18 @@ export default function VideoPlayerScreen({ route, navigation }) {
                         </BlurView>
                       </TouchableOpacity>
                     ) : (
-                      <>
+                      <View style={styles.controlPillContainer}>
+                        <BlurView intensity={80} tint="dark" style={styles.controlPillBlur}>
                         {/* Server Button - Only for Vidfast */}
                         {videoSource === 'vidfast' && availableServers.length > 0 && (
+                            <>
                           <View style={styles.serverButtonWrapper}>
                             <TouchableOpacity
-                              style={styles.controlButton}
+                                  style={styles.controlPillButton}
                               onPress={toggleServerMenu}
                               activeOpacity={0.7}
                             >
-                              <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
-                                <Ionicons name="server" size={20} color="#fff" />
-                              </BlurView>
+                                  <Ionicons name="server" size={18} color="#fff" />
                             </TouchableOpacity>
                             
                             <Animated.View 
@@ -2338,181 +2912,445 @@ export default function VideoPlayerScreen({ route, navigation }) {
                               </BlurView>
                             </Animated.View>
                           </View>
-                        )}
+                              <View style={styles.controlPillDivider} />
+                            </>
+                          )}
 
-                        {/* Speed Button - Expandable */}
-                        <Animated.View 
-                          style={[styles.speedButtonContainer, { width: speedButtonWidth }]}
-                          {...speedPanResponder.panHandlers}
-                        >
-                          <BlurView intensity={80} tint="dark" style={styles.speedButtonBlur}>
-                            <TouchableOpacity
-                              style={styles.speedButtonContent}
-                              onPress={toggleSpeedOptions}
-                              activeOpacity={0.7}
-                            >
-                              <Ionicons name="speedometer" size={20} color="#fff" />
-                              <Text style={styles.speedButtonText}>{playbackRate}x</Text>
-                            </TouchableOpacity>
-                            
-                            {isSpeedExpanded && (
-                              <View style={styles.speedOptionsContainer}>
-                                {playbackRates.map((rate) => (
-                                  <TouchableOpacity
-                                    key={rate}
-                                    style={[
-                                      styles.speedOption,
-                                      playbackRate === rate && styles.speedOptionActive,
-                                    ]}
-                                    onPress={() => changePlaybackRate(rate)}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.speedOptionText,
-                                        playbackRate === rate && styles.speedOptionTextActive,
-                                      ]}
-                                    >
-                                      {rate}x
-                                    </Text>
-                                  </TouchableOpacity>
-                                ))}
-                              </View>
-                            )}
-                          </BlurView>
-                        </Animated.View>
-
-                        {/* Subtitle Button - Context Menu */}
-                        <View style={styles.subtitleButtonWrapper}>
+                          {/* Audio Settings Button */}
                           <TouchableOpacity
-                            style={styles.controlButton}
-                            onPress={toggleSubtitleMenu}
+                            style={styles.controlPillButton}
+                            onPress={toggleAudioSettingsModal}
                             activeOpacity={0.7}
                           >
-                            <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
-                              <Ionicons 
-                                name={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "text" : "text-outline"} 
-                                size={20} 
-                                color={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "#fff" : "#fff"} 
-                              />
-                            </BlurView>
+                            <Ionicons name="musical-notes" size={18} color="#fff" />
                           </TouchableOpacity>
-                      
-                      <Animated.View 
-                        style={[
-                          styles.subtitleMenuContainer,
-                          {
-                            opacity: subtitleModalOpacity,
-                            transform: [{ translateY: subtitleModalTranslateY }],
-                          }
-                        ]}
-                        pointerEvents={isSubtitleExpanded ? 'auto' : 'none'}
-                      >
-                          <BlurView intensity={100} tint="dark" style={styles.subtitleMenuBlur}>
-                            <ScrollView 
-                              style={styles.subtitleMenuScroll}
-                              nestedScrollEnabled={true}
-                              showsVerticalScrollIndicator={false}
+                          
+                          <View style={styles.controlPillDivider} />
+                          
+                          {/* Subtitle Button */}
+                            <TouchableOpacity
+                            style={styles.controlPillButton}
+                            onPress={toggleSubtitleMenu}
+                              activeOpacity={0.7}
                             >
-                              {subtitleTracks.map((track) => (
-                                <TouchableOpacity
-                                  key={track.id}
-                                  style={[
-                                    styles.subtitleMenuItem,
-                                    selectedSubtitleTrack?.id === track.id && styles.subtitleMenuItemActive,
-                                  ]}
-                                  onPress={() => selectSubtitleTrack(track)}
-                                >
-                                  <Text
+                            <Ionicons 
+                              name={selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' ? "text" : "text-outline"} 
+                              size={18} 
+                              color="#fff" 
+                            />
+                            </TouchableOpacity>
+                            
+                          {/* Orientation Toggle Button - Only on native platforms */}
+                          {Platform.OS !== 'web' && (
+                            <>
+                              <View style={styles.controlPillDivider} />
+                                  <TouchableOpacity
+                                style={styles.controlPillButton}
+                                onPress={toggleOrientation}
+                                activeOpacity={0.7}
+                              >
+                                <Ionicons 
+                                  name={isLandscape ? "phone-portrait" : "phone-landscape"} 
+                                  size={18} 
+                                  color="#fff" 
+                                />
+                              </TouchableOpacity>
+                            </>
+                          )}
+                        </BlurView>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Progress Slider - iOS Native Style */}
+                  <View style={styles.progressContainer}>
+                    <Text style={styles.timeText}>{getCurrentTime()}</Text>
+                    <View
+                      style={styles.sliderWrapper}
+                      onLayout={(event) => {
+                        const { width } = event.nativeEvent.layout;
+                        setSliderWidth(width);
+                      }}
+                      {...panResponder.panHandlers}
+                    >
+                      {/* Background Track */}
+                      <Animated.View 
                                     style={[
-                                      styles.subtitleMenuItemText,
-                                      selectedSubtitleTrack?.id === track.id && styles.subtitleMenuItemTextActive,
-                                    ]}
-                                  >
-                                    {track.name}
-                                  </Text>
-                                  {selectedSubtitleTrack?.id === track.id && (
-                                    <Ionicons name="checkmark" size={16} color="#fff" style={styles.subtitleMenuCheck} />
-                                  )}
-                                </TouchableOpacity>
-                              ))}
-                            </ScrollView>
-                          </BlurView>
+                          styles.sliderTrack,
+                          {
+                            height: sliderHeight,
+                            borderRadius: sliderHeight.interpolate({
+                              inputRange: [35, 39],
+                              outputRange: [17.5, 19.5],
+                            }),
+                          },
+                        ]}
+                      >
+                        {/* Progress Fill */}
+                        <Animated.View
+                                      style={[
+                            styles.sliderFill,
+                            {
+                              width: sliderProgress.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: ['0%', '100%'],
+                              }),
+                              borderRadius: sliderHeight.interpolate({
+                                inputRange: [35, 39],
+                                outputRange: [17.5, 19.5],
+                              }),
+                            },
+                          ]}
+                        />
                       </Animated.View>
                     </View>
+                    <Text style={styles.timeText}>{getFinishTime()}</Text>
+                  </View>
 
-                    {/* Orientation Toggle Button - Only on native platforms */}
-                    {Platform.OS !== 'web' && (
-                      <TouchableOpacity
-                        style={styles.controlButton}
-                        onPress={toggleOrientation}
-                        activeOpacity={0.7}
-                      >
-                        <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
+                  {/* Info Section */}
+                  <View style={styles.infoSection}>
+                    <Text style={styles.infoText}>
+                      {formatTime(position)}
+                                    </Text>
+                    <Text style={styles.infoSeparator}>|</Text>
+                    <Text style={styles.infoText}>
+                      {getFinishTime()}
+                    </Text>
+                    {batteryLevel !== null && (
+                      <>
+                        <Text style={styles.infoSeparator}>|</Text>
+                        <View style={styles.batteryContainer}>
                           <Ionicons 
-                            name={isLandscape ? "phone-portrait" : "phone-landscape"} 
-                            size={20} 
+                            name={getBatteryIconName()} 
+                            size={14} 
                             color="#fff" 
+                            style={styles.batteryIcon} 
                           />
-                        </BlurView>
-                      </TouchableOpacity>
-                    )}
+                          <Text style={styles.infoText}>
+                            {batteryLevel}%
+                          </Text>
+                              </View>
+                      </>
+                            )}
+                  </View>
+                        </Animated.View>
+              )}
+              </>
+            )}
 
-                    {/* Menu Button */}
-                    <View style={styles.menuButtonWrapper}>
-                      <TouchableOpacity 
-                        style={styles.controlButton}
-                        onPress={toggleMenu}
-                        activeOpacity={0.7}
-                      >
-                      <BlurView intensity={80} tint="dark" style={styles.controlButtonBlur}>
-                        <Ionicons name="ellipsis-horizontal" size={20} color="#fff" />
-                      </BlurView>
-                      </TouchableOpacity>
+            {/* Locked Controls Indicator */}
+            {isControlsLocked && !showControls && !showSubtitleSettingsModal && (
+                          <TouchableOpacity
+                style={styles.unlockButton}
+                onPress={toggleLock}
+              >
+                <BlurView intensity={80} tint="dark" style={styles.unlockButtonBlur}>
+                  <Ionicons name="lock-closed" size={30} color="#fff" />
+                            </BlurView>
+                          </TouchableOpacity>
+            )}
                       
+            {/* Fullscreen Subtitle Settings Modal (Netflix-style) */}
+            {showSubtitleSettingsModal && (
                       <Animated.View 
                         style={[
-                          styles.menuContainer,
-                          isSubtitleSearchMode && styles.menuContainerExpanded,
-                          isSubtitleSearchMode && styles.menuContainerExpandedPosition,
-                          {
-                            opacity: menuModalOpacity,
-                            transform: [
-                              { translateY: Animated.add(menuModalTranslateY, menuModalDownwardTranslate) },
-                            ],
-                          }
-                        ]}
-                        pointerEvents={isMenuExpanded ? 'auto' : 'none'}
-                        onStartShouldSetResponder={() => true}
-                        onMoveShouldSetResponder={() => true}
-                      >
-                        <BlurView 
-                          intensity={100} 
-                          tint="dark" 
-                          style={styles.menuBlur}
-                          onStartShouldSetResponder={() => true}
-                          onMoveShouldSetResponder={() => true}
+                  styles.subtitleSettingsModalOverlay,
+                  {
+                    opacity: subtitleSettingsModalOpacity,
+                  }
+                ]}
+                pointerEvents="auto"
+              >
+                <TouchableOpacity
+                  style={styles.subtitleSettingsModalBackdrop}
+                  activeOpacity={1}
+                  onPress={closeSubtitleSettingsModal}
+                />
+                <Animated.View
+                  style={[
+                    styles.subtitleSettingsModalContent,
+                    {
+                      transform: [{ scale: subtitleSettingsModalScale }],
+                    }
+                  ]}
+                  pointerEvents="auto"
+                >
+                  {/* Close Button */}
+                  <TouchableOpacity
+                    style={styles.subtitleSettingsCloseButton}
+                    onPress={closeSubtitleSettingsModal}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="close" size={28} color="#fff" />
+                  </TouchableOpacity>
+
+                  {/* Title and Back Button */}
+                  <View style={styles.subtitleSettingsTitleContainer}>
+                    {isSubtitleSearchMode ? (
+                      <View style={styles.subtitleSettingsTitleRow}>
+                        <TouchableOpacity
+                          style={styles.subtitleSettingsBackButton}
+                          onPress={handleBackFromSearch}
+                          activeOpacity={0.7}
                         >
-                          {isSubtitleSearchMode ? (
-                            <>
-                              {/* Back Button */}
-                              <TouchableOpacity
-                                style={styles.menuItem}
-                                onPress={handleBackFromSearch}
+                          <Ionicons name="arrow-back" size={24} color="#fff" />
+                        </TouchableOpacity>
+                        <Text style={styles.subtitleSettingsTitle}>Find Subtitles</Text>
+                      </View>
+                    ) : isAppearanceMode ? (
+                      <View style={styles.subtitleSettingsTitleRow}>
+                        <TouchableOpacity
+                          style={styles.subtitleSettingsBackButton}
+                          onPress={handleBackFromAppearance}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="arrow-back" size={24} color="#fff" />
+                        </TouchableOpacity>
+                        <Text style={styles.subtitleSettingsTitle}>Appearance</Text>
+                      </View>
+                    ) : isDelayMode ? (
+                      <View style={styles.subtitleSettingsTitleRow}>
+                        <TouchableOpacity
+                          style={styles.subtitleSettingsBackButton}
+                          onPress={handleBackFromDelay}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="arrow-back" size={24} color="#fff" />
+                        </TouchableOpacity>
+                        <Text style={styles.subtitleSettingsTitle}>Delay</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.subtitleSettingsTitle}>Subtitles & Audio</Text>
+                    )}
+                  </View>
+
+                  {isDelayMode ? (
+                            <ScrollView 
+                      style={styles.subtitleSettingsScrollView}
+                      contentContainerStyle={styles.subtitleSettingsScrollContent}
+                              showsVerticalScrollIndicator={false}
+                      nestedScrollEnabled={true}
+                    >
+                      {/* Delay Section */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <Text style={styles.subtitleSettingsSectionTitle}>Delay</Text>
+                        <View style={styles.subtitleSettingsDelayContainer}>
+                          {/* Custom Input Field */}
+                          <View style={styles.subtitleSettingsDelayInputContainer}>
+                            <Text style={styles.subtitleSettingsDelayInputLabel}>Delay (seconds)</Text>
+                            <TextInput
+                              style={styles.subtitleSettingsDelayInput}
+                              value={subtitleDelay === 0 ? '0' : (subtitleDelay / 1000).toFixed(2)}
+                              onChangeText={(text) => {
+                                // Remove any non-numeric characters except decimal point and minus
+                                const cleaned = text.replace(/[^0-9.-]/g, '');
+                                if (cleaned === '' || cleaned === '-') {
+                                  setSubtitleDelay(0);
+                                  return;
+                                }
+                                const value = parseFloat(cleaned);
+                                if (!isNaN(value)) {
+                                  // Clamp between -3.0 and +3.0 seconds
+                                  const clamped = Math.max(-3.0, Math.min(3.0, value));
+                                  setSubtitleDelay(Math.round(clamped * 1000));
+                                }
+                              }}
+                              keyboardType="numeric"
+                              placeholder="0.00"
+                              placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                              returnKeyType="done"
+                            />
+                            <Text style={styles.subtitleSettingsDelayInputUnit}>s</Text>
+                          </View>
+
+                          {/* Interactive Slider */}
+                          <View style={styles.subtitleSettingsDelaySliderContainer}>
+                            <Text style={styles.subtitleSettingsDelaySliderLabel}>-3.0s</Text>
+                            <View 
+                              style={styles.subtitleSettingsDelaySlider}
+                            >
+                                <TouchableOpacity
+                                style={styles.subtitleSettingsDelaySliderTrackContainer}
+                                activeOpacity={1}
+                                onPress={(e) => {
+                                  // Only handle press if not dragging
+                                  if (isDelaySliderDragging) return;
+                                  // Calculate position on slider using locationX
+                                  const { locationX } = e.nativeEvent;
+                                  const sliderWidth = delaySliderWidthRef.current;
+                                  if (sliderWidth === 0) return;
+                                  const percentage = Math.max(0, Math.min(1, locationX / sliderWidth));
+                                  // Map from -3000ms to +3000ms
+                                  const newDelay = Math.round(-3000 + (percentage * 6000));
+                                  setSubtitleDelay(newDelay);
+                                }}
                               >
-                                <Ionicons name="arrow-back" size={18} color="#fff" style={styles.menuItemIcon} />
-                                <Text style={styles.menuItemText}>Back</Text>
+                                <View 
+                                  style={styles.subtitleSettingsDelaySliderTrack}
+                                  onLayout={(e) => {
+                                    // Store track width when layout is measured
+                                    const { width } = e.nativeEvent.layout;
+                                    if (width > 0) {
+                                      delaySliderWidthRef.current = width;
+                                    }
+                                  }}
+                                >
+                                  {/* Zero marker */}
+                                  <View 
+                                  style={[
+                                      styles.subtitleSettingsDelaySliderZeroMarker,
+                                      { left: '50%' }
+                                    ]} 
+                                  />
+                                  {/* Fill from center */}
+                                  <View
+                                    style={[
+                                      styles.subtitleSettingsDelaySliderFill,
+                                      subtitleDelay < 0 
+                                        ? {
+                                            right: '50%',
+                                            width: `${Math.abs((subtitleDelay + 3000) / 6000) * 100}%`,
+                                          }
+                                        : {
+                                            left: '50%',
+                                            width: `${((subtitleDelay + 3000) / 6000) * 100}%`,
+                                          },
+                                    ]}
+                                  />
+                                  {/* Thumb - draggable */}
+                                  {delaySliderPanResponder.current && (
+                                    <View
+                                      style={[
+                                        styles.subtitleSettingsDelaySliderThumb,
+                                        { 
+                                          left: `${((subtitleDelay + 3000) / 6000) * 100}%`,
+                                          opacity: isDelaySliderDragging ? 0.8 : 1,
+                                        },
+                                      ]}
+                                      {...delaySliderPanResponder.current.panHandlers}
+                                    />
+                                  )}
+                                </View>
+                                </TouchableOpacity>
+                            </View>
+                            <Text style={styles.subtitleSettingsDelaySliderLabel}>+3.0s</Text>
+                    </View>
+
+                          {/* Display Current Value */}
+                          <Text style={styles.subtitleSettingsDelayLabel}>
+                            {subtitleDelay === 0 
+                              ? 'No delay' 
+                              : subtitleDelay > 0 
+                                ? `+${(subtitleDelay / 1000).toFixed(2)}s` 
+                                : `${(subtitleDelay / 1000).toFixed(2)}s`}
+                          </Text>
+
+                          <View style={styles.subtitleSettingsDelayControls}>
+                      <TouchableOpacity
+                              style={styles.subtitleSettingsDelayButton}
+                              onPress={() => setSubtitleDelay(Math.max(-3000, subtitleDelay - 250))}
+                              disabled={subtitleDelay <= -3000}
+                        activeOpacity={0.7}
+                      >
+                          <Ionicons 
+                                name="remove" 
+                            size={20} 
+                                color={subtitleDelay <= -3000 ? 'rgba(255, 255, 255, 0.3)' : '#fff'} 
+                                style={{ marginRight: 4 }}
+                              />
+                              <Text style={[
+                                styles.subtitleSettingsDelayButtonText,
+                                subtitleDelay <= -3000 && styles.subtitleSettingsDelayButtonTextDisabled
+                              ]}>
+                                0.25s
+                              </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity 
+                              style={styles.subtitleSettingsDelayButton}
+                              onPress={() => setSubtitleDelay(Math.max(-3000, subtitleDelay - 500))}
+                              disabled={subtitleDelay <= -3000}
+                        activeOpacity={0.7}
+                      >
+                              <Ionicons 
+                                name="remove-circle-outline" 
+                                size={20} 
+                                color={subtitleDelay <= -3000 ? 'rgba(255, 255, 255, 0.3)' : '#fff'} 
+                                style={{ marginRight: 4 }}
+                              />
+                              <Text style={[
+                                styles.subtitleSettingsDelayButtonText,
+                                subtitleDelay <= -3000 && styles.subtitleSettingsDelayButtonTextDisabled
+                              ]}>
+                                0.5s
+                              </Text>
+                      </TouchableOpacity>
+                      
+                            <TouchableOpacity
+                        style={[
+                                styles.subtitleSettingsDelayButton,
+                                subtitleDelay === 0 && styles.subtitleSettingsDelayButtonActive
+                              ]}
+                              onPress={() => setSubtitleDelay(0)}
+                              activeOpacity={0.7}
+                            >
+                              <Text style={[
+                                styles.subtitleSettingsDelayButtonText,
+                                subtitleDelay === 0 && styles.subtitleSettingsDelayButtonTextActive
+                              ]}>
+                                Reset
+                              </Text>
+                            </TouchableOpacity>
+
+                              <TouchableOpacity
+                              style={styles.subtitleSettingsDelayButton}
+                              onPress={() => setSubtitleDelay(Math.min(3000, subtitleDelay + 500))}
+                              disabled={subtitleDelay >= 3000}
+                              activeOpacity={0.7}
+                            >
+                              <Ionicons 
+                                name="add-circle-outline" 
+                                size={20} 
+                                color={subtitleDelay >= 3000 ? 'rgba(255, 255, 255, 0.3)' : '#fff'} 
+                                style={{ marginRight: 4 }}
+                              />
+                              <Text style={[
+                                styles.subtitleSettingsDelayButtonText,
+                                subtitleDelay >= 3000 && styles.subtitleSettingsDelayButtonTextDisabled
+                              ]}>
+                                0.5s
+                              </Text>
                               </TouchableOpacity>
                               
-                              {/* Subtitle Search Content */}
-                              <View 
-                                style={styles.subtitleSearchContent}
-                                onStartShouldSetResponder={() => true}
-                                onMoveShouldSetResponder={() => true}
-                              >
+                            <TouchableOpacity
+                              style={styles.subtitleSettingsDelayButton}
+                              onPress={() => setSubtitleDelay(Math.min(3000, subtitleDelay + 250))}
+                              disabled={subtitleDelay >= 3000}
+                              activeOpacity={0.7}
+                            >
+                              <Ionicons 
+                                name="add" 
+                                size={20} 
+                                color={subtitleDelay >= 3000 ? 'rgba(255, 255, 255, 0.3)' : '#fff'} 
+                                style={{ marginRight: 4 }}
+                              />
+                              <Text style={[
+                                styles.subtitleSettingsDelayButtonText,
+                                subtitleDelay >= 3000 && styles.subtitleSettingsDelayButtonTextDisabled
+                              ]}>
+                                0.25s
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      </View>
+                    </ScrollView>
+                  ) : isSubtitleSearchMode ? (
+                    <View style={styles.subtitleSearchContent}>
                                 {/* Search Input */}
                                 <View style={styles.searchInputContainer}>
                                   <TextInput
-                                    style={[styles.searchInput, { marginRight: 8 }]}
+                          style={styles.searchInput}
                                     placeholder="Search for subtitles..."
                                     placeholderTextColor="rgba(255, 255, 255, 0.5)"
                                     value={subtitleSearchQuery}
@@ -2573,9 +3411,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                                   style={styles.searchResultsContainer}
                                   nestedScrollEnabled={true}
                                   showsVerticalScrollIndicator={false}
-                                  onStartShouldSetResponder={() => true}
-                                  onMoveShouldSetResponder={() => true}
-                                  onResponderTerminationRequest={() => false}
+                        contentContainerStyle={styles.searchResultsContent}
                                 >
                                   {isSearchingSubtitles ? (
                                     <View style={styles.emptyState}>
@@ -2622,136 +3458,519 @@ export default function VideoPlayerScreen({ route, navigation }) {
                                     <View style={styles.emptyState}>
                                       <Ionicons name="document-text-outline" size={48} color="rgba(255, 255, 255, 0.3)" />
                                       <Text style={styles.emptyStateText}>No subtitles found</Text>
-                                      <Text style={[styles.emptyStateText, { fontSize: 12, marginTop: 8, opacity: 0.7 }]}>
-                                        Try searching with a different title or language
-                                      </Text>
                                     </View>
-                                  ) : null}
+                        ) : (
+                          <View style={styles.emptyState}>
+                            <Ionicons name="search-outline" size={48} color="rgba(255, 255, 255, 0.3)" />
+                            <Text style={styles.emptyStateText}>Search for subtitles</Text>
+                          </View>
+                        )}
                                 </ScrollView>
                               </View>
-                            </>
-                          ) : (
-                            <>
-                              <TouchableOpacity
-                                style={styles.menuItem}
-                                onPress={handleLoadSRT}
+                  ) : isAppearanceMode ? (
+                    <ScrollView
+                      style={styles.subtitleSettingsScrollView}
+                      contentContainerStyle={styles.subtitleSettingsScrollContent}
+                      showsVerticalScrollIndicator={false}
+                      nestedScrollEnabled={true}
+                    >
+                      {/* Preview */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <Text style={styles.subtitleSettingsSectionTitle}>Preview</Text>
+                        <View style={styles.subtitleSettingsPreview}>
+                          <View style={styles.subtitleSettingsPreviewVideo}>
+                            <View style={styles.subtitleSettingsPreviewOverlay}>
+                              <Text
+                                style={[
+                                  styles.subtitleSettingsPreviewText,
+                                  {
+                                    color: subtitleColor,
+                                    fontSize: subtitleSize,
+                                    textShadowColor: subtitleShadow ? 'rgba(0, 0, 0, 0.8)' : 'transparent',
+                                    textShadowOffset: subtitleShadow ? { width: 2, height: 2 } : { width: 0, height: 0 },
+                                    textShadowRadius: subtitleShadow ? 4 : 0,
+                                    backgroundColor: subtitleBackground ? 'rgba(0, 0, 0, 0.7)' : 'transparent',
+                                    paddingHorizontal: subtitleBackground ? 12 : 0,
+                                    paddingVertical: subtitleBackground ? 6 : 0,
+                                    borderRadius: subtitleBackground ? 4 : 0,
+                                  }
+                                ]}
                               >
-                                <Ionicons name="document-text" size={18} color="#fff" style={styles.menuItemIcon} />
-                                <Text style={styles.menuItemText}>Load SRT</Text>
-                              </TouchableOpacity>
-                              
+                                Preview Text
+                              </Text>
+                            </View>
+                          </View>
+                        </View>
+                      </View>
+
+                      {/* Color Selection */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <Text style={styles.subtitleSettingsSectionTitle}>Color</Text>
+                        <View style={styles.subtitleSettingsColorPicker}>
+                          {['#ffffff', '#ffff00', '#00ff00', '#00ffff', '#ff00ff', '#ff0000', '#0000ff', '#ffa500'].map((color) => (
                               <TouchableOpacity
-                                style={styles.menuItem}
-                                onPress={handleLoadSubtitlesOnline}
-                              >
-                                <Ionicons name="cloud-download" size={18} color="#fff" style={styles.menuItemIcon} />
-                                <Text style={styles.menuItemText}>Load Subtitles Online</Text>
+                              key={color}
+                              style={[
+                                styles.subtitleSettingsColorOption,
+                                { backgroundColor: color },
+                                subtitleColor === color && styles.subtitleSettingsColorOptionActive,
+                              ]}
+                              onPress={() => setSubtitleColor(color)}
+                              activeOpacity={0.7}
+                            >
+                              {subtitleColor === color && (
+                                <Ionicons name="checkmark" size={16} color={color === '#ffffff' ? '#000' : '#fff'} />
+                              )}
                               </TouchableOpacity>
-                            </>
-                          )}
-                        </BlurView>
-                      </Animated.View>
+                          ))}
+                        </View>
+                      </View>
+
+                      {/* Size Slider */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <Text style={styles.subtitleSettingsSectionTitle}>Size</Text>
+                        <View style={styles.subtitleSettingsSizeRow}>
+                          <View style={styles.subtitleSettingsSizeContainer}>
+                            <Text style={styles.subtitleSettingsSizeLabel}>Small</Text>
+                            <View 
+                              style={styles.subtitleSettingsSizeSlider}
+                              onLayout={(e) => {
+                                // Store slider width for calculations
+                                if (e.nativeEvent.layout.width > 0) {
+                                  sizeSliderWidthRef.current = e.nativeEvent.layout.width;
+                                }
+                              }}
+                            >
+                              <TouchableOpacity
+                                style={styles.subtitleSettingsSizeSliderTrackContainer}
+                                activeOpacity={1}
+                                onPress={(e) => {
+                                  // Calculate position on slider using locationX
+                                  const { locationX } = e.nativeEvent;
+                                  const sliderWidth = sizeSliderWidthRef.current;
+                                  const percentage = Math.max(0, Math.min(1, locationX / sliderWidth));
+                                  const newSize = Math.round(12 + (percentage * (24 - 12)));
+                                  const roundedSize = Math.max(12, Math.min(24, Math.round(newSize / 2) * 2)); // Round to even numbers
+                                  setSubtitleSize(roundedSize);
+                                }}
+                              >
+                                <View style={styles.subtitleSettingsSizeSliderTrack}>
+                                  <View
+                                    style={[
+                                      styles.subtitleSettingsSizeSliderFill,
+                                      { width: `${((subtitleSize - 12) / (24 - 12)) * 100}%` },
+                                    ]}
+                                  />
+                                  <View
+                                    style={[
+                                      styles.subtitleSettingsSizeSliderThumb,
+                                      { left: `${((subtitleSize - 12) / (24 - 12)) * 100}%` },
+                                    ]}
+                                  />
+                                </View>
+                              </TouchableOpacity>
                     </View>
-                      </>
-                    )}
+                            <Text style={styles.subtitleSettingsSizeLabel}>Large</Text>
+                          </View>
+                          <View style={styles.subtitleSettingsSizeControls}>
+                            <TouchableOpacity
+                              style={styles.subtitleSettingsSizeButton}
+                              onPress={() => {
+                                if (subtitleSize > 12) {
+                                  setSubtitleSize(subtitleSize - 2);
+                                }
+                              }}
+                              disabled={subtitleSize <= 12}
+                            >
+                              <Ionicons name="remove" size={20} color={subtitleSize > 12 ? '#fff' : 'rgba(255, 255, 255, 0.3)'} />
+                            </TouchableOpacity>
+                            <Text style={styles.subtitleSettingsSizeValue}>{subtitleSize}</Text>
+                            <TouchableOpacity
+                              style={styles.subtitleSettingsSizeButton}
+                              onPress={() => {
+                                if (subtitleSize < 24) {
+                                  setSubtitleSize(subtitleSize + 2);
+                                }
+                              }}
+                              disabled={subtitleSize >= 24}
+                            >
+                              <Ionicons name="add" size={20} color={subtitleSize < 24 ? '#fff' : 'rgba(255, 255, 255, 0.3)'} />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
                   </View>
 
-                  {/* Progress Slider - iOS Native Style */}
-                  <View style={styles.progressContainer}>
-                    <Text style={styles.timeText}>{getCurrentTime()}</Text>
+                      {/* Background Toggle */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <Text style={styles.subtitleSettingsSectionTitle}>Background</Text>
+                        <TouchableOpacity
+                          style={styles.subtitleSettingsToggle}
+                          onPress={() => setSubtitleBackground(!subtitleBackground)}
+                          activeOpacity={0.7}
+                        >
                     <View
-                      style={styles.sliderWrapper}
-                      onLayout={(event) => {
-                        const { width } = event.nativeEvent.layout;
-                        setSliderWidth(width);
-                      }}
-                      {...panResponder.panHandlers}
-                    >
-                      {/* Background Track */}
+                            style={[
+                              styles.subtitleSettingsToggleTrack,
+                              subtitleBackground && styles.subtitleSettingsToggleTrackActive,
+                            ]}
+                          >
                       <Animated.View
                         style={[
-                          styles.sliderTrack,
-                          {
-                            height: sliderHeight,
-                            borderRadius: sliderHeight.interpolate({
-                              inputRange: [35, 39],
-                              outputRange: [17.5, 19.5],
-                            }),
-                          },
-                        ]}
-                      >
-                        {/* Progress Fill */}
+                                styles.subtitleSettingsToggleThumb,
+                                subtitleBackground && styles.subtitleSettingsToggleThumbActive,
+                              ]}
+                            />
+                          </View>
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Shadow Toggle */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <Text style={styles.subtitleSettingsSectionTitle}>Shadow</Text>
+                        <TouchableOpacity
+                          style={styles.subtitleSettingsToggle}
+                          onPress={() => setSubtitleShadow(!subtitleShadow)}
+                          activeOpacity={0.7}
+                        >
+                          <View
+                            style={[
+                              styles.subtitleSettingsToggleTrack,
+                              subtitleShadow && styles.subtitleSettingsToggleTrackActive,
+                            ]}
+                          >
                         <Animated.View
                           style={[
-                            styles.sliderFill,
-                            {
-                              width: sliderProgress.interpolate({
-                                inputRange: [0, 1],
-                                outputRange: ['0%', '100%'],
-                              }),
-                              borderRadius: sliderHeight.interpolate({
-                                inputRange: [35, 39],
-                                outputRange: [17.5, 19.5],
-                              }),
-                            },
-                          ]}
-                        />
-                      </Animated.View>
+                                styles.subtitleSettingsToggleThumb,
+                                subtitleShadow && styles.subtitleSettingsToggleThumbActive,
+                              ]}
+                            />
                     </View>
-                    <Text style={styles.timeText}>{getFinishTime()}</Text>
+                        </TouchableOpacity>
                   </View>
-
-                  {/* Info Section */}
-                  <View style={styles.infoSection}>
-                    <Text style={styles.infoText}>
-                      {formatTime(position)}
+                    </ScrollView>
+                  ) : (
+                    <ScrollView
+                      style={styles.subtitleSettingsScrollView}
+                      contentContainerStyle={styles.subtitleSettingsScrollContent}
+                      showsVerticalScrollIndicator={false}
+                      nestedScrollEnabled={true}
+                    >
+                      {/* Subtitle Track Selection */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <Text style={styles.subtitleSettingsSectionTitle}>Subtitles</Text>
+                        <View style={styles.subtitleSettingsTracksList}>
+                          {subtitleTracks.length > 0 ? (
+                            <>
+                              {/* "Off" option */}
+                              {subtitleTracks.find(track => track.id === 'none') && (
+                                <TouchableOpacity
+                                  key="none"
+                                  style={[
+                                    styles.subtitleSettingsTrackItem,
+                                    selectedSubtitleTrack?.id === 'none' && styles.subtitleSettingsTrackItemActive,
+                                  ]}
+                                  onPress={() => selectSubtitleTrack(subtitleTracks.find(track => track.id === 'none'))}
+                                  activeOpacity={0.7}
+                                >
+                                  <View style={styles.subtitleSettingsTrackItemContent}>
+                                    <Text
+                                      style={[
+                                        styles.subtitleSettingsTrackItemText,
+                                        selectedSubtitleTrack?.id === 'none' && styles.subtitleSettingsTrackItemTextActive,
+                                      ]}
+                                    >
+                                      Off
+                                    </Text>
+                                    {selectedSubtitleTrack?.id === 'none' && (
+                                      <Ionicons name="checkmark" size={20} color="#fff" />
+                                    )}
+                                  </View>
+                                </TouchableOpacity>
+                              )}
+                              
+                              {/* Language groups */}
+                              {(() => {
+                                const offTrack = subtitleTracks.find(track => track.id === 'none');
+                                const otherTracks = subtitleTracks.filter(track => track.id !== 'none');
+                                const languageGroups = groupTracksByLanguage(otherTracks);
+                                const sortedGroups = getSortedLanguageGroups(languageGroups);
+                                
+                                return sortedGroups.map(([languageKey, tracks]) => {
+                                  // Sort tracks within the group by name to ensure consistent ordering
+                                  const sortedTracks = [...tracks].sort((a, b) => {
+                                    const nameA = (a.name || '').toLowerCase();
+                                    const nameB = (b.name || '').toLowerCase();
+                                    return nameA.localeCompare(nameB);
+                                  });
+                                  
+                                  const isExpanded = expandedLanguageGroup === languageKey;
+                                  const hasSelectedTrack = sortedTracks.some(track => track.id === selectedSubtitleTrack?.id);
+                                  const displayName = getLanguageDisplayName(languageKey, sortedTracks);
+                                  
+                                  return (
+                                    <View key={languageKey} style={styles.subtitleLanguageGroup}>
+                                      <TouchableOpacity
+                                        style={[
+                                          styles.subtitleSettingsTrackItem,
+                                          hasSelectedTrack && styles.subtitleSettingsTrackItemActive,
+                                        ]}
+                                        onPress={() => toggleLanguageGroup(languageKey)}
+                                        activeOpacity={0.7}
+                                      >
+                                        <View style={styles.subtitleSettingsTrackItemContent}>
+                                          <Text
+                                            style={[
+                                              styles.subtitleSettingsTrackItemText,
+                                              hasSelectedTrack && styles.subtitleSettingsTrackItemTextActive,
+                                            ]}
+                                          >
+                                            {displayName}
                     </Text>
-                    <Text style={styles.infoSeparator}>|</Text>
-                    <Text style={styles.infoText}>
-                      {getFinishTime()}
-                    </Text>
-                    {batteryLevel !== null && (
-                      <>
-                        <Text style={styles.infoSeparator}>|</Text>
-                        <View style={styles.batteryContainer}>
+                                          <View style={styles.subtitleLanguageGroupIcons}>
+                                            {hasSelectedTrack && (
+                                              <Ionicons name="checkmark" size={20} color="#fff" style={styles.subtitleLanguageGroupCheckmark} />
+                                            )}
                           <Ionicons 
-                            name={getBatteryIconName()} 
-                            size={14} 
-                            color="#fff" 
-                            style={styles.batteryIcon} 
-                          />
-                          <Text style={styles.infoText}>
-                            {batteryLevel}%
+                                              name={isExpanded ? "chevron-up" : "chevron-down"} 
+                                              size={20} 
+                                              color="rgba(255, 255, 255, 0.5)" 
+                                            />
+                                          </View>
+                                        </View>
+                                      </TouchableOpacity>
+                                      
+                                      {/* Expanded track selection */}
+                                      {isExpanded && (
+                                        <View style={styles.subtitleLanguageGroupTracks}>
+                                          <ScrollView 
+                                            horizontal 
+                                            showsHorizontalScrollIndicator={false}
+                                            style={styles.subtitleLanguageGroupScroll}
+                                            contentContainerStyle={styles.subtitleLanguageGroupScrollContent}
+                                          >
+                                            {sortedTracks.map((track, index) => {
+                                              const isSelected = track.id === selectedSubtitleTrack?.id;
+                                              return (
+                                                <TouchableOpacity
+                                                  key={track.id}
+                                                  style={[
+                                                    styles.subtitleLanguageGroupTrackItem,
+                                                    isSelected && styles.subtitleLanguageGroupTrackItemActive,
+                                                  ]}
+                                                  onPress={() => {
+                                                    selectSubtitleTrack(track);
+                                                    // Optionally close the group after selection
+                                                    // setExpandedLanguageGroup(null);
+                                                  }}
+                                                  activeOpacity={0.7}
+                                                >
+                                                  <Text
+                                                    style={[
+                                                      styles.subtitleLanguageGroupTrackItemText,
+                                                      isSelected && styles.subtitleLanguageGroupTrackItemTextActive,
+                                                    ]}
+                                                    numberOfLines={1}
+                                                  >
+                                                    {index + 1}
                           </Text>
+                                                  {isSelected && (
+                                                    <Ionicons name="checkmark" size={16} color="#fff" style={{ marginLeft: 4 }} />
+                                                  )}
+                                                </TouchableOpacity>
+                                              );
+                                            })}
+                                          </ScrollView>
                         </View>
+                                      )}
+                                    </View>
+                                  );
+                                });
+                              })()}
                       </>
+                          ) : (
+                            <View style={styles.subtitleSettingsEmptyState}>
+                              <Text style={styles.subtitleSettingsEmptyText}>No subtitles available</Text>
+                            </View>
                     )}
                   </View>
+                        
+                        {/* Load Subtitles Online Button */}
+                        <TouchableOpacity
+                          style={styles.subtitleSettingsButton}
+                          onPress={handleLoadSubtitlesOnline}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="cloud-download-outline" size={20} color="#fff" style={styles.subtitleSettingsButtonIcon} />
+                          <Text style={styles.subtitleSettingsButtonText}>Find Subtitles</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Appearance Settings Button */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <TouchableOpacity
+                          style={styles.subtitleSettingsButton}
+                          onPress={handleOpenAppearance}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="color-palette-outline" size={20} color="#fff" style={styles.subtitleSettingsButtonIcon} />
+                          <Text style={styles.subtitleSettingsButtonText}>Appearance</Text>
+                          <Ionicons name="chevron-forward" size={20} color="rgba(255, 255, 255, 0.5)" style={styles.subtitleSettingsButtonArrow} />
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Delay Settings Button */}
+                      <View style={styles.subtitleSettingsSection}>
+                        <TouchableOpacity
+                          style={styles.subtitleSettingsButton}
+                          onPress={handleOpenDelay}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="time-outline" size={20} color="#fff" style={styles.subtitleSettingsButtonIcon} />
+                          <Text style={styles.subtitleSettingsButtonText}>Delay</Text>
+                          <Ionicons name="chevron-forward" size={20} color="rgba(255, 255, 255, 0.5)" style={styles.subtitleSettingsButtonArrow} />
+                        </TouchableOpacity>
+                      </View>
+                    </ScrollView>
+                  )}
                 </Animated.View>
-              </>
+              </Animated.View>
             )}
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
-            {/* Locked Controls Indicator */}
-            {isControlsLocked && !showControls && (
+      {/* Audio Settings Modal (Netflix-style) */}
+      {showAudioSettingsModal && (
+        <Animated.View
+          style={[
+            styles.subtitleSettingsModalOverlay,
+            {
+              opacity: audioSettingsModalOpacity,
+            }
+          ]}
+          pointerEvents="auto"
+        >
               <TouchableOpacity
-                style={styles.unlockButton}
-                onPress={toggleLock}
-              >
-                <BlurView intensity={80} tint="dark" style={styles.unlockButtonBlur}>
-                  <Ionicons name="lock-closed" size={30} color="#fff" />
-                </BlurView>
+            style={styles.subtitleSettingsModalBackdrop}
+            activeOpacity={1}
+            onPress={closeAudioSettingsModal}
+          />
+          <Animated.View
+            style={[
+              styles.subtitleSettingsModalContent,
+              {
+                transform: [{ scale: audioSettingsModalScale }],
+              }
+            ]}
+            pointerEvents="auto"
+          >
+            {/* Close Button */}
+            <TouchableOpacity
+              style={styles.subtitleSettingsCloseButton}
+              onPress={closeAudioSettingsModal}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close" size={28} color="#fff" />
               </TouchableOpacity>
-            )}
 
-            {/* Subtitle Overlay */}
-            {currentSubtitleText && (
-              <View style={[
+            {/* Title */}
+            <View style={styles.subtitleSettingsTitleContainer}>
+              <Text style={styles.subtitleSettingsTitle}>Audio & Speed</Text>
+            </View>
+
+            {/* Audio Settings Content */}
+            <ScrollView
+              style={styles.subtitleSettingsScrollView}
+              contentContainerStyle={styles.subtitleSettingsScrollContent}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled={true}
+            >
+              {/* Audio Track Selection */}
+              <View style={styles.subtitleSettingsSection}>
+                <Text style={styles.subtitleSettingsSectionTitle}>Audio</Text>
+                <View style={styles.subtitleSettingsTracksList}>
+                  {audioTracks.length > 0 ? (
+                    audioTracks.map((track) => (
+                      <TouchableOpacity
+                        key={track.id}
+                        style={[
+                          styles.subtitleSettingsTrackItem,
+                          selectedAudioTrack?.id === track.id && styles.subtitleSettingsTrackItemActive,
+                        ]}
+                        onPress={() => selectAudioTrack(track)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.subtitleSettingsTrackItemContent}>
+                          <Text
+                            style={[
+                              styles.subtitleSettingsTrackItemText,
+                              selectedAudioTrack?.id === track.id && styles.subtitleSettingsTrackItemTextActive,
+                            ]}
+                          >
+                            {track.name || track.language || 'Default'}
+                          </Text>
+                          {selectedAudioTrack?.id === track.id && (
+                            <Ionicons name="checkmark" size={20} color="#fff" />
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    ))
+                  ) : (
+                    <View style={styles.subtitleSettingsEmptyState}>
+                      <Text style={styles.subtitleSettingsEmptyText}>No audio tracks available</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+
+              {/* Playback Speed Selection */}
+              <View style={styles.subtitleSettingsSection}>
+                <Text style={styles.subtitleSettingsSectionTitle}>Playback Speed</Text>
+                <View style={styles.subtitleSettingsTracksList}>
+                  {[0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0].map((rate) => (
+                    <TouchableOpacity
+                      key={rate}
+                      style={[
+                        styles.subtitleSettingsTrackItem,
+                        playbackRate === rate && styles.subtitleSettingsTrackItemActive,
+                      ]}
+                      onPress={() => changePlaybackRate(rate, false)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.subtitleSettingsTrackItemContent}>
+                        <Text
+                          style={[
+                            styles.subtitleSettingsTrackItemText,
+                            playbackRate === rate && styles.subtitleSettingsTrackItemTextActive,
+                          ]}
+                        >
+                          {rate}x
+                        </Text>
+                        {playbackRate === rate && (
+                          <Ionicons name="checkmark" size={20} color="#fff" />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </ScrollView>
+          </Animated.View>
+        </Animated.View>
+      )}
+
+      {/* Subtitle Overlay - Positioned above bottom controls, moves up when controls appear */}
+      {/* Hide subtitles when subtitle settings modal is open */}
+      {currentSubtitleText && selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' && !showSubtitleSettingsModal && !showAudioSettingsModal && (
+        <Animated.View 
+          style={[
                 styles.subtitleOverlay,
                 {
-                  top: `${subtitlePosition}%`,
-                  marginTop: subtitlePosition === 50 ? -20 : 0,
+              bottom: subtitleBottomPosition,
                 }
-              ]}>
+          ]}
+          pointerEvents="none"
+        >
                 <Text style={[
                   styles.subtitleText,
                   {
@@ -2768,11 +3987,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
                     WebkitTextStrokeColor: subtitleOutline ? '#000' : 'transparent',
                   }
                 ]}>{currentSubtitleText}</Text>
-              </View>
+        </Animated.View>
             )}
-          </TouchableOpacity>
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -2915,6 +4131,9 @@ const styles = StyleSheet.create({
   },
   titleContainer: {
     flex: 1,
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
+    marginRight: 8,
   },
   episodeNumber: {
     color: 'rgba(255, 255, 255, 0.6)',
@@ -2929,8 +4148,11 @@ const styles = StyleSheet.create({
   },
   titleLogo: {
     height: 40,
-    maxWidth: 200,
-    marginTop: 4,
+    width: 250,
+    maxWidth: 250,
+    marginLeft: 0,
+    marginRight: 8,
+    backgroundColor: 'transparent',
   },
   topRight: {
     flexDirection: 'row',
@@ -3006,6 +4228,7 @@ const styles = StyleSheet.create({
     right: 0,
     paddingBottom: 20,
     paddingHorizontal: 16,
+    zIndex: 10, // Higher z-index than subtitles
   },
   skipButton: {
     marginBottom: 12,
@@ -3127,6 +4350,29 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     marginBottom: 8,
     alignItems: 'center',
+  },
+  controlPillContainer: {
+    borderRadius: 25,
+    overflow: 'hidden',
+  },
+  controlPillBlur: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  controlPillButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  controlPillDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    marginHorizontal: 2,
   },
   nextEpisodeButton: {
     height: 42,
@@ -3340,8 +4586,10 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 20,
-    zIndex: 10,
+    paddingBottom: 8,
+    zIndex: 5, // Lower z-index than controls (controls are zIndex 10+)
   },
   subtitleText: {
     fontWeight: '600',
@@ -3352,14 +4600,543 @@ const styles = StyleSheet.create({
     maxWidth: '90%',
     lineHeight: 24,
   },
+  // Fullscreen Subtitle Settings Modal (Netflix-style)
+  subtitleSettingsModalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10000,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  subtitleSettingsModalBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+  },
+  subtitleSettingsModalContent: {
+    width: '90%',
+    maxWidth: 600,
+    height: '80%',
+    maxHeight: '80%',
+    backgroundColor: 'rgba(20, 20, 20, 0.95)',
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    flexDirection: 'column',
+  },
+  subtitleSettingsCloseButton: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10001,
+  },
+  subtitleSettingsTitleContainer: {
+    paddingHorizontal: 24,
+    paddingTop: 24,
+    paddingBottom: 20,
+  },
+  subtitleSettingsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  subtitleSettingsBackButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  subtitleSettingsTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    flex: 1,
+  },
+  subtitleSettingsScrollView: {
+    flex: 1,
+    minHeight: 0, // Important for ScrollView to work inside flex container
+  },
+  subtitleSettingsScrollContent: {
+    paddingBottom: 24,
+    flexGrow: 1,
+  },
+  subtitleSettingsSection: {
+    paddingHorizontal: 24,
+    paddingTop: 8,
+    paddingBottom: 16,
+  },
+  subtitleSettingsSectionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 16,
+  },
+  subtitleSettingsTracksList: {
+    marginBottom: 16,
+    minHeight: 50,
+  },
+  subtitleSettingsEmptyState: {
+    paddingVertical: 20,
+    alignItems: 'center',
+  },
+  subtitleSettingsEmptyText: {
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 14,
+  },
+  subtitleLanguageGroup: {
+    marginBottom: 4,
+  },
+  subtitleSettingsTrackItem: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  subtitleSettingsTrackItemActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.3)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.5)',
+  },
+  subtitleSettingsTrackItemContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  subtitleSettingsTrackItemText: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.9)',
+    flex: 1,
+  },
+  subtitleSettingsTrackItemTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  subtitleLanguageGroupIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  subtitleLanguageGroupCheckmark: {
+    marginRight: 8,
+  },
+  subtitleLanguageGroupTracks: {
+    marginTop: 8,
+    marginBottom: 4,
+    paddingLeft: 16,
+    paddingRight: 16,
+  },
+  subtitleLanguageGroupScroll: {
+    flexGrow: 0,
+  },
+  subtitleLanguageGroupScrollContent: {
+    paddingRight: 0,
+  },
+  subtitleLanguageGroupTrackItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    minWidth: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    marginRight: 8,
+  },
+  subtitleLanguageGroupTrackItemActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.3)',
+    borderColor: 'rgba(255, 59, 48, 0.5)',
+  },
+  subtitleLanguageGroupTrackItemText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontWeight: '600',
+  },
+  subtitleLanguageGroupTrackItemTextActive: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  subtitleSettingsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    marginTop: 8,
+  },
+  subtitleSettingsButtonIcon: {
+    marginRight: 8,
+  },
+  subtitleSettingsButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    flex: 1,
+    textAlign: 'center',
+  },
+  subtitleSettingsButtonArrow: {
+    marginLeft: 8,
+  },
+  subtitleSettingsPreview: {
+    marginBottom: 24,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    aspectRatio: 16 / 9,
+    position: 'relative',
+  },
+  subtitleSettingsPreviewVideo: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'rgba(50, 50, 50, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  subtitleSettingsPreviewOverlay: {
+    position: 'absolute',
+    bottom: 20,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  subtitleSettingsPreviewText: {
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  subtitleSettingsOption: {
+    marginBottom: 24,
+  },
+  subtitleSettingsOptionLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 12,
+  },
+  subtitleSettingsColorPicker: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  subtitleSettingsColorOption: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 3,
+    borderColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  subtitleSettingsColorOptionActive: {
+    borderColor: '#fff',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  subtitleSettingsSizeRow: {
+    marginBottom: 12,
+  },
+  subtitleSettingsSizeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 12,
+  },
+  subtitleSettingsSizeLabel: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+    minWidth: 50,
+  },
+  subtitleSettingsSizeSlider: {
+    flex: 1,
+    height: 40,
+    justifyContent: 'center',
+  },
+  subtitleSettingsSizeSliderTrackContainer: {
+    width: '100%',
+    height: 40,
+    justifyContent: 'center',
+    paddingVertical: 18,
+  },
+  subtitleSettingsSizeSliderTrack: {
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 2,
+    position: 'relative',
+    width: '100%',
+  },
+  subtitleSettingsSizeSliderFill: {
+    height: '100%',
+    backgroundColor: '#FF3B30',
+    borderRadius: 2,
+    position: 'absolute',
+    left: 0,
+    top: 0,
+  },
+  subtitleSettingsSizeSliderThumb: {
+    position: 'absolute',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    top: -8,
+    marginLeft: -10,
+    borderWidth: 2,
+    borderColor: '#FF3B30',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  subtitleSettingsSizeControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  subtitleSettingsSizeValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    minWidth: 30,
+    textAlign: 'center',
+  },
+  subtitleSettingsSizeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  subtitleSettingsToggle: {
+    alignSelf: 'flex-start',
+  },
+  subtitleSettingsToggleTrack: {
+    width: 50,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+  },
+  subtitleSettingsToggleTrackActive: {
+    backgroundColor: '#FF3B30',
+  },
+  subtitleSettingsToggleThumb: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#fff',
+  },
+  subtitleSettingsToggleThumbActive: {
+    transform: [{ translateX: 20 }],
+  },
+  subtitleSettingsDelayContainer: {
+    marginTop: 8,
+  },
+  subtitleSettingsDelayInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  subtitleSettingsDelayInputLabel: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginRight: 12,
+    fontWeight: '500',
+  },
+  subtitleSettingsDelayInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: '600',
+    textAlign: 'center',
+    minWidth: 60,
+  },
+  subtitleSettingsDelayInputUnit: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginLeft: 8,
+    fontWeight: '500',
+  },
+  subtitleSettingsDelaySliderContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+    gap: 12,
+  },
+  subtitleSettingsDelaySliderLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontWeight: '500',
+    minWidth: 40,
+    textAlign: 'center',
+  },
+  subtitleSettingsDelaySlider: {
+    flex: 1,
+    height: 40,
+    justifyContent: 'center',
+    paddingVertical: 18,
+  },
+  subtitleSettingsDelaySliderTrackContainer: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+  },
+  subtitleSettingsDelaySliderTrack: {
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 2,
+    position: 'relative',
+    width: '100%',
+  },
+  subtitleSettingsDelaySliderZeroMarker: {
+    position: 'absolute',
+    width: 2,
+    height: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    top: 0,
+    marginLeft: -1,
+  },
+  subtitleSettingsDelaySliderFill: {
+    height: '100%',
+    backgroundColor: '#FF3B30',
+    borderRadius: 2,
+    position: 'absolute',
+    top: 0,
+  },
+  subtitleSettingsDelaySliderThumb: {
+    position: 'absolute',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    top: -8,
+    marginLeft: -10,
+    borderWidth: 2,
+    borderColor: '#FF3B30',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  subtitleSettingsDelayLabel: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.9)',
+    marginBottom: 16,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  subtitleSettingsDelayControls: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginTop: 8,
+  },
+  subtitleSettingsDelayButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    minWidth: 80,
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  subtitleSettingsDelayButtonActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.3)',
+    borderColor: 'rgba(255, 59, 48, 0.5)',
+  },
+  subtitleSettingsDelayButtonText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontWeight: '600',
+  },
+  subtitleSettingsDelayButtonTextActive: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  subtitleSettingsDelayButtonTextDisabled: {
+    color: 'rgba(255, 255, 255, 0.3)',
+  },
+  // Subtitle Search Modal (when opened from subtitle settings)
+  subtitleSearchModalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10001,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  subtitleSearchModalContent: {
+    width: '90%',
+    maxWidth: 600,
+    maxHeight: '80%',
+    borderRadius: 12,
+    overflow: 'hidden',
+    padding: 20,
+  },
+  subtitleSearchBackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingVertical: 8,
+  },
+  subtitleSearchBackText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#fff',
+    marginLeft: 8,
+  },
   subtitleSearchContent: {
     flex: 1,
-    paddingTop: 8,
+    paddingHorizontal: 24,
+    minHeight: 0, // Important for ScrollView to work inside flex container
+  },
+  searchResultsContent: {
+    paddingBottom: 24,
   },
   searchInputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
+    gap: 8,
   },
   searchInput: {
     flex: 1,
@@ -3411,7 +5188,7 @@ const styles = StyleSheet.create({
   },
   searchResultsContainer: {
     flex: 1,
-    maxHeight: 350,
+    minHeight: 0, // Important for ScrollView to work inside flex container
   },
   subtitleResultItem: {
     padding: 12,

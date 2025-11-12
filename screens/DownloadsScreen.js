@@ -268,9 +268,9 @@ export default function DownloadsScreen({ navigation }) {
                 key={`movie_${movie.mediaId}`}
                 video={movie}
                 onPress={(movie) => {
-                  // Navigate to movie details
+                  // Navigate directly to video player for downloaded movies
                   if (navigation) {
-                    navigation.navigate('MovieDetails', { 
+                    navigation.navigate('VideoPlayer', { 
                       item: {
                         id: movie.mediaId,
                         title: movie.title,
@@ -376,8 +376,28 @@ export default function DownloadsScreen({ navigation }) {
                         video={episode}
                         isEpisode={true}
                         onPress={() => {
-                          // Navigate to episode player
-                          console.log('Episode pressed:', episode);
+                          // Navigate directly to video player for downloaded episodes
+                          if (navigation) {
+                            navigation.navigate('VideoPlayer', {
+                              item: {
+                                id: episode.mediaId,
+                                name: tvShow.name || tvShow.title,
+                                poster_path: tvShow.posterPath,
+                                backdrop_path: tvShow.backdropPath,
+                                overview: tvShow.overview,
+                                first_air_date: tvShow.firstAirDate,
+                                media_type: 'tv',
+                              },
+                              episode: {
+                                episode_number: episode.episodeNumber,
+                                name: episode.episodeTitle,
+                                overview: episode.episodeOverview,
+                                air_date: episode.airDate,
+                              },
+                              season: episode.season,
+                              episodeNumber: episode.episodeNumber,
+                            });
+                          }
                         }}
                         onDelete={async (episode) => {
                           Alert.alert(

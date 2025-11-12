@@ -3,7 +3,7 @@ const BASE_URL = 'https://api.opensubtitles.com/api/v1';
 const USERNAME = 'morgk';
 const PASSWORD = 'v?y#RH+Fvash77N';
 
-// Language codes mapping
+// Language codes mapping (ISO 639-1 for API, display names)
 export const LANGUAGE_CODES = {
   'eng': 'English',
   'spa': 'Spanish',
@@ -20,6 +20,25 @@ export const LANGUAGE_CODES = {
   'dut': 'Dutch',
   'pol': 'Polish',
   'tur': 'Turkish',
+};
+
+// Map 3-letter language codes to 2-letter ISO 639-1 codes for API
+const LANGUAGE_CODE_MAP = {
+  'eng': 'en',
+  'spa': 'es',
+  'fre': 'fr',
+  'ger': 'de',
+  'ita': 'it',
+  'por': 'pt',
+  'jpn': 'ja',
+  'kor': 'ko',
+  'chi': 'zh',
+  'ara': 'ar',
+  'rus': 'ru',
+  'hin': 'hi',
+  'dut': 'nl',
+  'pol': 'pl',
+  'tur': 'tr',
 };
 
 let authToken = null;
@@ -74,115 +93,131 @@ export const OpenSubtitlesService = {
   // Search subtitles by title
   async searchSubtitles(title, language = 'eng', imdbId = null) {
     try {
+      // Get authentication token (API v1 now requires auth for searches)
+      const token = await this.getAuthToken();
+      
       // Clean and prepare search query
       const cleanTitle = title.trim();
-      console.log('Searching with query:', cleanTitle, 'Language:', language, 'IMDb:', imdbId);
       
-      // If we have an IMDb ID, use it (more accurate)
-      let url;
+      // Convert 3-letter language code to 2-letter ISO 639-1 code for API
+      const apiLanguage = LANGUAGE_CODE_MAP[language] || language.substring(0, 2);
+      
+      console.log('Searching with query:', cleanTitle, 'Language:', language, 'API Language:', apiLanguage, 'IMDb:', imdbId);
+      
+      // Prepare headers with authentication
+      const headers = {
+        'Api-Key': API_KEY,
+        'User-Agent': 'Mumen Rider 1.0',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      };
+      
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      
+      // Try multiple strategies
+      let searchStrategies = [];
+      
+      // Strategy 1: If we have IMDb ID, try with it (with and without 'tt' prefix)
       if (imdbId) {
-        const imdbIdClean = imdbId.replace('tt', ''); // Remove 'tt' prefix if present
-        url = `${BASE_URL}/subtitles?imdb_id=${imdbIdClean}&languages=${language}`;
-        console.log('Searching by IMDb ID:', imdbIdClean);
-      } else {
-        // Otherwise search by query
-        url = `${BASE_URL}/subtitles?query=${encodeURIComponent(cleanTitle)}&languages=${language}`;
-      }
-      console.log('Search URL:', url);
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Api-Key': API_KEY,
-          'User-Agent': 'Mumen Rider 1.0',
-          'Accept': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('OpenSubtitles search error:', errorText);
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('OpenSubtitles API response:', JSON.stringify(data, null, 2));
-      console.log('Total results:', data.total_count);
-      
-      // If no results and we're not using IMDb ID, try different strategies
-      if (data.total_count === 0 && !imdbId) {
-        console.log('No results found, trying alternative searches...');
-        
-        // Strategy 1: Try without type filter
-        console.log('Trying without type filter...');
-        let fallbackUrl = `${BASE_URL}/subtitles?query=${encodeURIComponent(cleanTitle)}&languages=${language}`;
-        let fallbackResponse = await fetch(fallbackUrl, {
-          method: 'GET',
-          headers: {
-            'Api-Key': API_KEY,
-            'User-Agent': 'Mumen Rider 1.0',
-            'Accept': 'application/json',
-          },
+        const imdbIdClean = imdbId.replace(/^tt/, ''); // Remove 'tt' prefix if present
+        // Try with IMDb ID and language
+        searchStrategies.push({
+          name: 'IMDb ID with language',
+          url: `${BASE_URL}/subtitles?imdb_id=${imdbIdClean}&languages=${apiLanguage}`,
         });
-        
-        if (fallbackResponse.ok) {
-          const fallbackData = await fallbackResponse.json();
-          console.log('Without type filter results:', fallbackData.total_count);
-          if (fallbackData.total_count > 0) {
-            return this.parseSearchResults(fallbackData, cleanTitle, language);
-          }
+        // Try with IMDb ID without language filter (in case language code is wrong)
+        searchStrategies.push({
+          name: 'IMDb ID without language',
+          url: `${BASE_URL}/subtitles?imdb_id=${imdbIdClean}`,
+        });
+        // Try with IMDb ID and original language code
+        if (language !== apiLanguage) {
+          searchStrategies.push({
+            name: 'IMDb ID with original language code',
+            url: `${BASE_URL}/subtitles?imdb_id=${imdbIdClean}&languages=${language}`,
+          });
         }
-        
-        // Strategy 2: Try simplified query
-        if (cleanTitle.includes(' ')) {
-          const words = cleanTitle.split(' ');
-          if (words.length > 1) {
-            const simplifiedQuery = words.slice(0, Math.min(2, words.length)).join(' ');
-            console.log('Trying simplified query:', simplifiedQuery);
+      }
+      
+      // Strategy 2: Search by title with language
+      if (cleanTitle) {
+        searchStrategies.push({
+          name: 'Title with language',
+          url: `${BASE_URL}/subtitles?query=${encodeURIComponent(cleanTitle)}&languages=${apiLanguage}`,
+        });
+        // Try with original language code
+        if (language !== apiLanguage) {
+          searchStrategies.push({
+            name: 'Title with original language code',
+            url: `${BASE_URL}/subtitles?query=${encodeURIComponent(cleanTitle)}&languages=${language}`,
+          });
+        }
+        // Try without language filter
+        searchStrategies.push({
+          name: 'Title without language',
+          url: `${BASE_URL}/subtitles?query=${encodeURIComponent(cleanTitle)}`,
+        });
+      }
+      
+      // Try each strategy until we get results
+      for (const strategy of searchStrategies) {
+        try {
+          console.log(`Trying strategy: ${strategy.name}`);
+          console.log('Search URL:', strategy.url);
+          
+          const response = await fetch(strategy.url, {
+            method: 'GET',
+            headers: headers,
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`OpenSubtitles search error (${strategy.name}):`, response.status, errorText);
             
-            fallbackUrl = `${BASE_URL}/subtitles?query=${encodeURIComponent(simplifiedQuery)}&languages=${language}`;
-            fallbackResponse = await fetch(fallbackUrl, {
-              method: 'GET',
-              headers: {
-                'Api-Key': API_KEY,
-                'User-Agent': 'Mumen Rider 1.0',
-                'Accept': 'application/json',
-              },
-            });
-            
-            if (fallbackResponse.ok) {
-              const fallbackData = await fallbackResponse.json();
-              console.log('Simplified query results:', fallbackData.total_count);
-              if (fallbackData.total_count > 0) {
-                return this.parseSearchResults(fallbackData, simplifiedQuery, language);
+            // If we get 401, try to refresh token and retry
+            if (response.status === 401 && token) {
+              console.log('Got 401, refreshing token and retrying...');
+              authToken = null;
+              tokenExpiry = null;
+              const newToken = await this.getAuthToken();
+              if (newToken) {
+                headers['Authorization'] = `Bearer ${newToken}`;
+                // Retry once with new token
+                const retryResponse = await fetch(strategy.url, {
+                  method: 'GET',
+                  headers: headers,
+                });
+                if (retryResponse.ok) {
+                  const retryData = await retryResponse.json();
+                  console.log(`Retry successful for ${strategy.name}, results:`, retryData.total_count);
+                  if (retryData.total_count > 0) {
+                    return this.parseSearchResults(retryData, cleanTitle, language);
+                  }
+                }
               }
             }
+            continue; // Try next strategy
           }
-        }
-        
-        // Strategy 3: Try with 'all' language to see if language filter is the issue
-        console.log('Trying with all languages...');
-        fallbackUrl = `${BASE_URL}/subtitles?query=${encodeURIComponent(cleanTitle)}`;
-        fallbackResponse = await fetch(fallbackUrl, {
-          method: 'GET',
-          headers: {
-            'Api-Key': API_KEY,
-            'User-Agent': 'Mumen Rider 1.0',
-            'Accept': 'application/json',
-          },
-        });
-        
-        if (fallbackResponse.ok) {
-          const fallbackData = await fallbackResponse.json();
-          console.log('All languages results:', fallbackData.total_count);
-          if (fallbackData.total_count > 0) {
-            return this.parseSearchResults(fallbackData, cleanTitle, language);
+
+          const data = await response.json();
+          console.log(`OpenSubtitles API response (${strategy.name}):`, JSON.stringify(data, null, 2));
+          console.log('Total results:', data.total_count);
+          
+          if (data.total_count > 0 && data.data && data.data.length > 0) {
+            console.log(`Found results with strategy: ${strategy.name}`);
+            return this.parseSearchResults(data, cleanTitle, language);
           }
+        } catch (error) {
+          console.error(`Error with strategy ${strategy.name}:`, error);
+          continue; // Try next strategy
         }
       }
       
-      // Parse results
-      return this.parseSearchResults(data, cleanTitle, language);
+      // If all strategies failed, return empty array
+      console.log('All search strategies returned no results');
+      return [];
     } catch (error) {
       console.error('Error searching OpenSubtitles:', error);
       return [];

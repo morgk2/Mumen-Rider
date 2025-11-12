@@ -5,6 +5,7 @@ import { N3tflixService } from './N3tflixService';
 import { VidfastService } from './VidfastService';
 import { StorageService } from './StorageService';
 import { OpenSubtitlesService } from './OpenSubtitlesService';
+import { HLSDownloadService } from './HLSDownloadService';
 
 const DOWNLOADS_KEY = '@video_downloads';
 const DOWNLOADS_DIR = `${FileSystem.documentDirectory}video_downloads/`;
@@ -171,9 +172,10 @@ export const VideoDownloadService = {
       }
       
       // Fetch video stream and subtitles
-      downloadInfo.status = 'fetching_stream';
-      downloadInfo.progress = 0.1;
-      if (onProgress) onProgress(0.1);
+      downloadInfo.status = 'downloading'; // Use 'downloading' for UI display
+      downloadInfo.downloadStatus = 'fetching_stream'; // Internal status for detailed info
+      downloadInfo.progress = 0; // Start at 0% - will update when segments start downloading
+      activeDownloads.set(downloadId, { ...downloadInfo });
       
       // Get the selected video source
       const source = await StorageService.getVideoSource();
@@ -185,13 +187,144 @@ export const VideoDownloadService = {
         throw new Error('Could not fetch video stream');
       }
       
-      downloadInfo.progress = 0.3;
-      if (onProgress) onProgress(0.3);
+      // Stream fetched, but progress stays at 0% until segments start downloading
+      downloadInfo.downloadStatus = 'downloading_hls';
+      downloadInfo.status = 'downloading';
+      activeDownloads.set(downloadId, { ...downloadInfo });
       
-      // Download the video file
-      downloadInfo.status = 'downloading_video';
-      const videoFileName = result.streamUrl.includes('.m3u8') ? 'video.m3u8' : 'video.mp4';
-      const videoSavePath = `${mediaDir}${videoFileName}`;
+      // Check if this is an M3U8/HLS stream
+      // vixsrc uses /playlist/ URLs which are M3U8 playlists
+      const urlLower = result.streamUrl.toLowerCase();
+      
+      // Priority check: vixsrc playlist URLs are ALWAYS M3U8
+      const isVixsrcPlaylist = urlLower.includes('vixsrc.to/playlist') || 
+                               urlLower.includes('vixsrc.to/playlist/') ||
+                               (urlLower.includes('vixsrc') && urlLower.includes('/playlist'));
+      
+      // Other HLS patterns
+      const hasM3U8Extension = urlLower.includes('.m3u8');
+      const hasHLS = urlLower.includes('/hls/');
+      const hasM3U8InPath = urlLower.includes('m3u8');
+      
+      // Determine if this is an HLS stream
+      let isHLS = isVixsrcPlaylist || hasM3U8Extension || hasHLS || hasM3U8InPath;
+      
+      console.log('[VideoDownloadService] Stream URL:', result.streamUrl);
+      console.log('[VideoDownloadService] Is vixsrc playlist?', isVixsrcPlaylist);
+      console.log('[VideoDownloadService] Has .m3u8 extension?', hasM3U8Extension);
+      console.log('[VideoDownloadService] Initial HLS detection:', isHLS);
+      
+      // If it's a vixsrc playlist, it's DEFINITELY M3U8, so skip verification
+      // For other URLs that we're not sure about, verify by checking content-type
+      if (!isHLS) {
+        try {
+          console.log('[VideoDownloadService] Verifying content type for:', result.streamUrl);
+          const testResponse = await fetch(result.streamUrl, {
+            method: 'HEAD',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+              'Referer': 'https://vixsrc.to/',
+              'Origin': 'https://vixsrc.to/',
+            },
+          });
+          
+          const contentType = testResponse.headers.get('content-type') || '';
+          console.log('[VideoDownloadService] Content-Type:', contentType);
+          
+          // Check if content-type indicates M3U8 playlist
+          if (contentType.includes('mpegurl') || 
+              contentType.includes('m3u8') || 
+              contentType.includes('application/vnd.apple.mpegurl') ||
+              contentType.includes('application/x-mpegurl')) {
+            isHLS = true;
+            console.log('[VideoDownloadService] Detected M3U8 based on content-type');
+          }
+        } catch (error) {
+          console.warn('[VideoDownloadService] Failed to check content-type:', error);
+          // If HEAD request fails, try GET request with Range header to get just the first few bytes
+          // But for now, if URL pattern suggests HLS, trust it
+        }
+      }
+      
+      console.log('[VideoDownloadService] Final HLS detection:', isHLS);
+      
+      let videoSavePath;
+      let downloadResult;
+      
+      if (isHLS) {
+        // Use HLS downloader for M3U8 streams
+        console.log('Detected HLS/M3U8 stream, using HLS downloader');
+        downloadInfo.status = 'downloading'; // Use 'downloading' for UI display
+        downloadInfo.downloadStatus = 'downloading_hls'; // Internal status for logging
+        activeDownloads.set(downloadId, { ...downloadInfo });
+        
+        // Get quality preference
+        const preferredQuality = await StorageService.getDownloadQuality();
+        console.log('Download quality preference:', preferredQuality);
+        
+        // Get headers from service (vixsrc might need specific headers)
+        const headers = {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+          'Referer': 'https://vixsrc.to/',
+          'Origin': 'https://vixsrc.to/',
+        };
+        
+        // Download HLS stream
+        const hlsResult = await HLSDownloadService.downloadHLSStream(
+          result.streamUrl,
+          mediaDir,
+          headers,
+          null, // Don't use the internal HLS progress callback
+          preferredQuality,
+          // Use segment-based progress: 0% to 100% based on segments downloaded
+          (segmentProgress) => {
+            // segmentProgress.progress is 0-1 based on segments downloaded (0 segments = 0%, all segments = 100%)
+            // Use segment progress directly: 0% when no segments, 100% when all segments downloaded
+            const totalProgress = segmentProgress.progress; // 0 to 1 (0% to 100%)
+            downloadInfo.progress = totalProgress;
+            downloadInfo.status = 'downloading'; // Keep status as 'downloading' for UI
+            downloadInfo.downloadStatus = 'downloading_hls';
+            downloadInfo.segmentsDownloaded = segmentProgress.segmentsDownloaded;
+            downloadInfo.totalSegments = segmentProgress.totalSegments;
+            // Update the activeDownloads map with new progress
+            activeDownloads.set(downloadId, { 
+              ...downloadInfo, 
+              progress: totalProgress,
+              status: 'downloading',
+              downloadStatus: downloadInfo.downloadStatus,
+              segmentsDownloaded: segmentProgress.segmentsDownloaded,
+              totalSegments: segmentProgress.totalSegments,
+            });
+            if (onProgress) {
+              onProgress(totalProgress);
+            }
+            console.log(`[VideoDownloadService] HLS segment progress: ${segmentProgress.segmentsDownloaded}/${segmentProgress.totalSegments} segments (${(totalProgress * 100).toFixed(1)}%)`);
+          }
+        );
+        
+        if (!hlsResult || !hlsResult.success) {
+          throw new Error('HLS download failed');
+        }
+        
+        videoSavePath = hlsResult.localPlaylistPath;
+        downloadResult = { uri: hlsResult.localPlaylistPath };
+        
+        console.log('HLS stream downloaded successfully to:', hlsResult.localPlaylistPath);
+        // Segments are already at 100% from the segment progress callback
+        // Now just saving metadata (but progress stays at 100%)
+        downloadInfo.progress = 1.0; // 100% - all segments downloaded
+        downloadInfo.status = 'downloading';
+        downloadInfo.downloadStatus = 'saving_metadata';
+        activeDownloads.set(downloadId, { ...downloadInfo });
+        if (onProgress) onProgress(1.0);
+      } else {
+        // Use regular download for MP4 or other direct streams
+        console.log('Detected direct stream, using regular downloader');
+        downloadInfo.status = 'downloading'; // Use 'downloading' for UI display
+        downloadInfo.downloadStatus = 'downloading_video'; // Internal status for logging
+        activeDownloads.set(downloadId, { ...downloadInfo });
+        const videoFileName = 'video.mp4';
+        videoSavePath = `${mediaDir}${videoFileName}`;
       
       console.log('Starting video download from:', result.streamUrl);
       console.log('Saving to:', videoSavePath);
@@ -220,6 +353,13 @@ export const VideoDownloadService = {
             // Update progress: 30% (stream fetch) + 60% (video download)
             const totalProgress = 0.3 + (0.6 * progress);
             downloadInfo.progress = totalProgress;
+              downloadInfo.status = 'downloading'; // Keep status as 'downloading' for UI
+              // Update the activeDownloads map with new progress
+              activeDownloads.set(downloadId, { 
+                ...downloadInfo, 
+                progress: totalProgress,
+                status: 'downloading',
+              });
             if (onProgress) {
               onProgress(totalProgress);
             }
@@ -231,7 +371,7 @@ export const VideoDownloadService = {
           }
         );
         
-        const downloadResult = await downloadResumable.downloadAsync();
+          downloadResult = await downloadResumable.downloadAsync();
         
         if (!downloadResult || !downloadResult.uri) {
           throw new Error('Video download failed - no file received');
@@ -239,11 +379,16 @@ export const VideoDownloadService = {
         
         console.log('Video downloaded successfully to:', downloadResult.uri);
         downloadInfo.progress = 0.85;
+          downloadInfo.status = 'downloading';
+          downloadInfo.downloadStatus = 'validating_file';
+          activeDownloads.set(downloadId, { ...downloadInfo });
         if (onProgress) onProgress(0.85);
         
-        // Validate downloaded file is actually a video file
-        downloadInfo.status = 'validating_file';
+          // Validate downloaded file is actually a video file (only for MP4)
+          downloadInfo.status = 'downloading';
+          downloadInfo.downloadStatus = 'validating_file';
         downloadInfo.progress = 0.9;
+          activeDownloads.set(downloadId, { ...downloadInfo });
         if (onProgress) onProgress(0.9);
         
         try {
@@ -254,14 +399,11 @@ export const VideoDownloadService = {
           
           // Check file extension first
           const uriLower = downloadResult.uri.toLowerCase();
-          const videoExtensions = ['.mp4', '.m3u8', '.mkv', '.avi', '.mov', '.webm', '.flv', '.m4v'];
+            const videoExtensions = ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.m4v'];
           const hasVideoExtension = videoExtensions.some(ext => uriLower.includes(ext));
           
           // Check file size (video files should be reasonably large)
-          // For m3u8 playlists, they can be small, so we only check for MP4 and other direct video files
-          const isM3U8 = uriLower.includes('.m3u8') || videoSavePath.includes('.m3u8');
-          
-          if (!isM3U8 && fileInfo.size && fileInfo.size < 100 * 1024) {
+            if (fileInfo.size && fileInfo.size < 100 * 1024) {
             // File is very small (less than 100KB), likely not a video
             // This could be an error page or HTML
             console.warn('Downloaded file is very small:', fileInfo.size, 'bytes. Might not be a video file.');
@@ -297,14 +439,11 @@ export const VideoDownloadService = {
               }
               console.log('File appears to be binary (good sign for video file)');
             }
-          } else if (isM3U8) {
-            // For m3u8 playlists, they can be small text files, so we just verify they exist
-            console.log('M3U8 playlist downloaded, size:', fileInfo.size, 'bytes');
           } else {
             console.log('Video file validation: File size looks reasonable:', fileInfo.size, 'bytes');
           }
           
-          if (!hasVideoExtension && !uriLower.includes('video.m3u8') && !uriLower.includes('video.mp4')) {
+            if (!hasVideoExtension && !uriLower.includes('video.mp4')) {
             console.warn('Downloaded file does not have a video extension, but proceeding anyway');
           }
           
@@ -322,11 +461,27 @@ export const VideoDownloadService = {
       } catch (error) {
         console.error('Error downloading video:', error);
         throw new Error(`Video download failed: ${error.message}`);
+        }
+      }
+      
+      // For HLS, validate that the playlist file exists
+      if (isHLS) {
+        try {
+          const playlistInfo = await FileSystem.getInfoAsync(videoSavePath);
+          if (!playlistInfo.exists) {
+            throw new Error('HLS playlist file does not exist');
+          }
+          console.log('HLS playlist validation passed. File exists:', videoSavePath);
+        } catch (validationError) {
+          console.error('HLS playlist validation error:', validationError);
+          throw validationError;
+        }
       }
       
       // Save movie metadata
       downloadInfo.status = 'saving_metadata';
       downloadInfo.progress = 0.95;
+      activeDownloads.set(downloadId, { ...downloadInfo });
       if (onProgress) onProgress(0.95);
       
       const movieData = {
@@ -359,16 +514,22 @@ export const VideoDownloadService = {
       
       downloadInfo.status = 'completed';
       downloadInfo.progress = 1;
+      activeDownloads.set(downloadId, { ...downloadInfo });
+      // Remove from active downloads after a short delay to show completion
+      setTimeout(() => {
       activeDownloads.delete(downloadId);
+      }, 2000);
       
       return { success: true, movieData };
     } catch (error) {
       console.error('Error downloading movie:', error);
       downloadInfo.status = 'error';
       downloadInfo.error = error.message;
+      downloadInfo.progress = downloadInfo.progress || 0; // Keep current progress on error
+      activeDownloads.set(downloadId, { ...downloadInfo });
       setTimeout(() => {
         activeDownloads.delete(downloadId);
-      }, 5000);
+      }, 10000); // Keep error state visible for 10 seconds
       throw error;
     }
   },
@@ -415,9 +576,10 @@ export const VideoDownloadService = {
       }
       
       // Fetch video stream and subtitles
-      downloadInfo.status = 'fetching_stream';
-      downloadInfo.progress = 0.1;
-      if (onProgress) onProgress(0.1);
+      downloadInfo.status = 'downloading'; // Use 'downloading' for UI display
+      downloadInfo.downloadStatus = 'fetching_stream'; // Internal status for detailed info
+      downloadInfo.progress = 0; // Start at 0% - will update when segments start downloading
+      activeDownloads.set(downloadId, { ...downloadInfo });
       
       // Get the selected video source
       const source = await StorageService.getVideoSource();
@@ -429,13 +591,141 @@ export const VideoDownloadService = {
         throw new Error('Could not fetch video stream');
       }
       
-      downloadInfo.progress = 0.3;
-      if (onProgress) onProgress(0.3);
+      // Stream fetched, but progress stays at 0% until segments start downloading
+      downloadInfo.downloadStatus = 'downloading_hls';
+      downloadInfo.status = 'downloading';
+      activeDownloads.set(downloadId, { ...downloadInfo });
       
-      // Download the video file
-      downloadInfo.status = 'downloading_video';
-      const videoFileName = result.streamUrl.includes('.m3u8') ? 'video.m3u8' : 'video.mp4';
-      const videoSavePath = `${episodeDir}${videoFileName}`;
+      // Check if this is an M3U8/HLS stream (same logic as movies)
+      const urlLower = result.streamUrl.toLowerCase();
+      
+      // Priority check: vixsrc playlist URLs are ALWAYS M3U8
+      const isVixsrcPlaylist = urlLower.includes('vixsrc.to/playlist') || 
+                               urlLower.includes('vixsrc.to/playlist/') ||
+                               (urlLower.includes('vixsrc') && urlLower.includes('/playlist'));
+      
+      // Other HLS patterns
+      const hasM3U8Extension = urlLower.includes('.m3u8');
+      const hasHLS = urlLower.includes('/hls/');
+      const hasM3U8InPath = urlLower.includes('m3u8');
+      
+      // Determine if this is an HLS stream
+      let isHLS = isVixsrcPlaylist || hasM3U8Extension || hasHLS || hasM3U8InPath;
+      
+      console.log('[VideoDownloadService] Episode stream URL:', result.streamUrl);
+      console.log('[VideoDownloadService] Is vixsrc playlist?', isVixsrcPlaylist);
+      console.log('[VideoDownloadService] Has .m3u8 extension?', hasM3U8Extension);
+      console.log('[VideoDownloadService] Initial HLS detection:', isHLS);
+      
+      // If it's a vixsrc playlist, it's DEFINITELY M3U8, so skip verification
+      // For other URLs that we're not sure about, verify by checking content-type
+      if (!isHLS) {
+        try {
+          console.log('[VideoDownloadService] Verifying content type for:', result.streamUrl);
+          const testResponse = await fetch(result.streamUrl, {
+            method: 'HEAD',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+              'Referer': 'https://vixsrc.to/',
+              'Origin': 'https://vixsrc.to/',
+            },
+          });
+          
+          const contentType = testResponse.headers.get('content-type') || '';
+          console.log('[VideoDownloadService] Content-Type:', contentType);
+          
+          // Check if content-type indicates M3U8 playlist
+          if (contentType.includes('mpegurl') || 
+              contentType.includes('m3u8') || 
+              contentType.includes('application/vnd.apple.mpegurl') ||
+              contentType.includes('application/x-mpegurl')) {
+            isHLS = true;
+            console.log('[VideoDownloadService] Detected M3U8 based on content-type');
+          }
+        } catch (error) {
+          console.warn('[VideoDownloadService] Failed to check content-type:', error);
+        }
+      }
+      
+      console.log('[VideoDownloadService] Final HLS detection:', isHLS);
+      
+      let videoSavePath;
+      let downloadResult;
+      
+      if (isHLS) {
+        // Use HLS downloader for M3U8 streams
+        console.log('Detected HLS/M3U8 stream for episode, using HLS downloader');
+        downloadInfo.status = 'downloading'; // Use 'downloading' for UI display
+        downloadInfo.downloadStatus = 'downloading_hls'; // Internal status for logging
+        activeDownloads.set(downloadId, { ...downloadInfo });
+        
+        // Get quality preference
+        const preferredQuality = await StorageService.getDownloadQuality();
+        console.log('Download quality preference:', preferredQuality);
+        
+        // Get headers from service (vixsrc might need specific headers)
+        const headers = {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+          'Referer': 'https://vixsrc.to/',
+          'Origin': 'https://vixsrc.to/',
+        };
+        
+        // Download HLS stream
+        const hlsResult = await HLSDownloadService.downloadHLSStream(
+          result.streamUrl,
+          episodeDir,
+          headers,
+          null, // Don't use the internal HLS progress callback
+          preferredQuality,
+          // Use segment-based progress: 0% to 100% based on segments downloaded
+          (segmentProgress) => {
+            // segmentProgress.progress is 0-1 based on segments downloaded (0 segments = 0%, all segments = 100%)
+            // Use segment progress directly: 0% when no segments, 100% when all segments downloaded
+            const totalProgress = segmentProgress.progress; // 0 to 1 (0% to 100%)
+            downloadInfo.progress = totalProgress;
+            downloadInfo.status = 'downloading'; // Keep status as 'downloading' for UI
+            downloadInfo.downloadStatus = 'downloading_hls';
+            downloadInfo.segmentsDownloaded = segmentProgress.segmentsDownloaded;
+            downloadInfo.totalSegments = segmentProgress.totalSegments;
+            // Update the activeDownloads map with new progress
+            activeDownloads.set(downloadId, { 
+              ...downloadInfo, 
+              progress: totalProgress,
+              status: 'downloading',
+              downloadStatus: downloadInfo.downloadStatus,
+              segmentsDownloaded: segmentProgress.segmentsDownloaded,
+              totalSegments: segmentProgress.totalSegments,
+            });
+            if (onProgress) {
+              onProgress(totalProgress);
+            }
+            console.log(`[VideoDownloadService] Episode HLS segment progress: ${segmentProgress.segmentsDownloaded}/${segmentProgress.totalSegments} segments (${(totalProgress * 100).toFixed(1)}%)`);
+          }
+        );
+        
+        if (!hlsResult || !hlsResult.success) {
+          throw new Error('HLS download failed');
+        }
+        
+        videoSavePath = hlsResult.localPlaylistPath;
+        downloadResult = { uri: hlsResult.localPlaylistPath };
+        
+        console.log('HLS stream downloaded successfully to:', hlsResult.localPlaylistPath);
+        // Segments are already at 100% from the segment progress callback
+        // Now just saving metadata (but progress stays at 100%)
+        downloadInfo.progress = 1.0; // 100% - all segments downloaded
+        downloadInfo.status = 'downloading';
+        downloadInfo.downloadStatus = 'saving_metadata';
+        activeDownloads.set(downloadId, { ...downloadInfo });
+        if (onProgress) onProgress(1.0);
+      } else {
+        // Use regular download for MP4 or other direct streams
+        console.log('Detected direct stream for episode, using regular downloader');
+        downloadInfo.status = 'downloading'; // Use 'downloading' for UI display
+        downloadInfo.downloadStatus = 'downloading_video'; // Internal status for logging
+        activeDownloads.set(downloadId, { ...downloadInfo });
+        const videoFileName = 'video.mp4';
+        videoSavePath = `${episodeDir}${videoFileName}`;
       
       console.log('Starting video download from:', result.streamUrl);
       console.log('Saving to:', videoSavePath);
@@ -446,19 +736,40 @@ export const VideoDownloadService = {
           videoSavePath,
           {},
           (downloadProgress) => {
-            const progress = downloadProgress.totalBytesWritten / downloadProgress.totalBytesExpectedToWrite;
-            // Update progress: 30% (stream fetch) + 60% (video download)
-            const totalProgress = 0.3 + (0.6 * progress);
-            downloadInfo.progress = totalProgress;
+              // Handle cases where totalBytesExpectedToWrite might be 0, undefined, or invalid
+              let progress = 0;
+              const totalBytes = downloadProgress.totalBytesExpectedToWrite || 0;
+              const writtenBytes = downloadProgress.totalBytesWritten || 0;
+              
+              if (totalBytes > 0) {
+                progress = Math.min(1, Math.max(0, writtenBytes / totalBytes));
+              } else if (writtenBytes > 0) {
+                // If we don't know the total size, we can't calculate exact progress
+                console.log(`Video download progress: ${writtenBytes} bytes downloaded (total size unknown)`);
+                return downloadInfo.progress || 0;
+              }
+              
+              // Update progress: 0% to 100% (direct MP4 download)
+              downloadInfo.progress = progress;
+              downloadInfo.status = 'downloading'; // Keep status as 'downloading' for UI
+              // Update the activeDownloads map with new progress
+              activeDownloads.set(downloadId, { 
+                ...downloadInfo, 
+                progress: progress,
+                status: 'downloading',
+              });
             if (onProgress) {
-              onProgress(totalProgress);
+                onProgress(progress);
             }
-            console.log(`Video download progress: ${(progress * 100).toFixed(0)}%`);
+              const progressPercent = totalBytes > 0 
+                ? `${(progress * 100).toFixed(0)}% (${writtenBytes}/${totalBytes} bytes)`
+                : `${writtenBytes} bytes downloaded`;
+              console.log(`Video download progress: ${progressPercent}`);
             return progress;
           }
         );
         
-        const downloadResult = await downloadResumable.downloadAsync();
+          downloadResult = await downloadResumable.downloadAsync();
         
         if (!downloadResult || !downloadResult.uri) {
           throw new Error('Video download failed - no file received');
@@ -466,16 +777,93 @@ export const VideoDownloadService = {
         
         console.log('Video downloaded successfully to:', downloadResult.uri);
         downloadInfo.progress = 0.9;
+          downloadInfo.status = 'downloading';
+          downloadInfo.downloadStatus = 'validating_file';
+          activeDownloads.set(downloadId, { ...downloadInfo });
         if (onProgress) onProgress(0.9);
+        
+          // Validate downloaded file is actually a video file (only for MP4)
+          downloadInfo.status = 'downloading';
+          downloadInfo.downloadStatus = 'validating_file';
+          downloadInfo.progress = 0.95;
+          activeDownloads.set(downloadId, { ...downloadInfo });
+          if (onProgress) onProgress(0.95);
+          
+          try {
+            const fileInfo = await FileSystem.getInfoAsync(downloadResult.uri);
+            if (!fileInfo.exists) {
+              throw new Error('Downloaded file does not exist');
+            }
+            
+            // Check file extension first
+            const uriLower = downloadResult.uri.toLowerCase();
+            const videoExtensions = ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.m4v'];
+            const hasVideoExtension = videoExtensions.some(ext => uriLower.includes(ext));
+            
+            // Check file size (video files should be reasonably large)
+            if (fileInfo.size && fileInfo.size < 100 * 1024) {
+              // File is very small (less than 100KB), likely not a video
+              console.warn('Downloaded file is very small:', fileInfo.size, 'bytes. Might not be a video file.');
+              // For very small files, try to check if it's text/HTML
+              try {
+                const fileContent = await FileSystem.readAsStringAsync(downloadResult.uri);
+                
+                if (fileContent && typeof fileContent === 'string' && fileContent.length > 0) {
+                  const firstChunk = fileContent.substring(0, Math.min(500, fileContent.length)).toLowerCase();
+                  
+                  // Check if it's HTML or error message
+                  if (firstChunk.includes('<!doctype') || 
+                      firstChunk.includes('<html') ||
+                      firstChunk.includes('error') ||
+                      firstChunk.includes('not found')) {
+                    throw new Error('Downloaded file appears to be an error page or HTML, not a video file');
+                  }
+                }
+              } catch (readError) {
+                // If we can't read it as string, it might be binary (which is good for video)
+                console.log('File appears to be binary, which is expected for video files');
+              }
+            }
+            
+            console.log('File validation passed. File size:', fileInfo.size, 'bytes');
+          } catch (validationError) {
+            console.error('File validation error:', validationError);
+            // Delete the invalid file
+            try {
+              await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true });
+            } catch (deleteError) {
+              console.error('Error deleting invalid file:', deleteError);
+            }
+            throw validationError;
+          }
       } catch (error) {
         console.error('Error downloading video:', error);
         throw new Error(`Video download failed: ${error.message}`);
+        }
+      }
+      
+      // For HLS, validate that the playlist file exists
+      if (isHLS) {
+        try {
+          const playlistInfo = await FileSystem.getInfoAsync(videoSavePath);
+          if (!playlistInfo.exists) {
+            throw new Error('HLS playlist file does not exist');
+          }
+          console.log('HLS playlist validation passed. File exists:', videoSavePath);
+        } catch (validationError) {
+          console.error('HLS playlist validation error:', validationError);
+          throw validationError;
+        }
       }
       
       // Save episode metadata
-      downloadInfo.status = 'saving_metadata';
-      downloadInfo.progress = 0.95;
-      if (onProgress) onProgress(0.95);
+      downloadInfo.status = 'downloading';
+      downloadInfo.downloadStatus = 'saving_metadata';
+      // For HLS, progress is already 1.0; for MP4, progress is 0.95
+      // Update to 1.0 after metadata is saved
+      downloadInfo.progress = isHLS ? 1.0 : 0.98; // HLS is already done, MP4 is almost done
+      activeDownloads.set(downloadId, { ...downloadInfo });
+      if (onProgress) onProgress(downloadInfo.progress);
       
       const episodeData = {
         mediaId,
@@ -499,17 +887,24 @@ export const VideoDownloadService = {
       await this.ensureTVShowInfoDownloaded(tvShow);
       
       downloadInfo.status = 'completed';
-      downloadInfo.progress = 1;
+      downloadInfo.progress = 1.0; // 100% - all done
+      activeDownloads.set(downloadId, { ...downloadInfo });
+      if (onProgress) onProgress(1.0);
+      // Remove from active downloads after a short delay to show completion
+      setTimeout(() => {
       activeDownloads.delete(downloadId);
+      }, 2000);
       
       return { success: true, episodeData };
     } catch (error) {
       console.error('Error downloading episode:', error);
       downloadInfo.status = 'error';
       downloadInfo.error = error.message;
+      downloadInfo.progress = downloadInfo.progress || 0; // Keep current progress on error
+      activeDownloads.set(downloadId, { ...downloadInfo });
       setTimeout(() => {
         activeDownloads.delete(downloadId);
-      }, 5000);
+      }, 10000); // Keep error state visible for 10 seconds
       throw error;
     }
   },

@@ -157,8 +157,8 @@ export const VixsrcService = {
       }
 
       if (stream) {
-        // expo-av can handle m3u8 (HLS) playlists directly, so we return them as-is
-        // The playlist URL works in browser/VLC, so it should work with expo-av too
+        // expo-video can handle m3u8 (HLS) playlists directly, so we return them as-is
+        // The playlist URL works in browser/VLC, so it should work with expo-video too
         if (stream.includes('/playlist/') || stream.includes('.m3u8')) {
           console.log('HLS playlist URL found, using directly:', stream);
           return stream;

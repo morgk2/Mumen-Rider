@@ -79,6 +79,8 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [episodeProgress, setEpisodeProgress] = useState({});
+  const [episodeDownloadStatus, setEpisodeDownloadStatus] = useState({}); // Track download status for each episode
+  const [episodeDownloadProgress, setEpisodeDownloadProgress] = useState({}); // Track download progress for each episode
   const scrollY = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -106,6 +108,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
         const isTVShow = !item.title && (item.name || item.media_type === 'tv');
         if (isTVShow && episodes.length > 0) {
           loadEpisodeProgress(episodes, selectedSeason);
+          checkEpisodeDownloadStatuses();
         }
       }
     }, [item, episodes, selectedSeason])
@@ -121,6 +124,34 @@ export default function MovieDetailsScreen({ route, navigation }) {
     
     return () => clearInterval(interval);
   }, [isDownloading]);
+
+  // Check episode download status periodically
+  useEffect(() => {
+    const isTVShow = !item || (!item.title && (item.name || item.media_type === 'tv'));
+    if (!isTVShow || episodes.length === 0) return;
+    
+    // Check for active episode downloads from VideoDownloadService
+    const activeDownloads = VideoDownloadService.getActiveDownloads();
+    const hasActiveDownloads = activeDownloads.some(
+      d => d.mediaId === item.id && d.mediaType === 'tv' && d.season === selectedSeason
+    );
+    
+    if (!hasActiveDownloads) return;
+    
+    const interval = setInterval(() => {
+      checkEpisodeDownloadStatuses();
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [episodes, selectedSeason, item]);
+
+  // Reload episode download statuses when episodes or season changes
+  useEffect(() => {
+    const isTVShow = !item || (!item.title && (item.name || item.media_type === 'tv'));
+    if (isTVShow && episodes.length > 0) {
+      checkEpisodeDownloadStatuses();
+    }
+  }, [episodes, selectedSeason, item]);
   
   const checkBookmarkStatus = async () => {
     if (!item) return;
@@ -479,9 +510,16 @@ export default function MovieDetailsScreen({ route, navigation }) {
     if (!item || !item.id) return;
     
     const isTVShow = !item.title && (item.name || item.media_type === 'tv');
-    // Only check download status for movies
-    if (isTVShow) return;
     
+    if (isTVShow) {
+      // For TV shows, check download status for each episode
+      if (episodes.length > 0) {
+        checkEpisodeDownloadStatuses();
+      }
+      return;
+    }
+    
+    // For movies, check download status
     try {
       const downloaded = await VideoDownloadService.isMovieDownloaded(item.id);
       setIsDownloaded(downloaded);
@@ -501,6 +539,51 @@ export default function MovieDetailsScreen({ route, navigation }) {
       }
     } catch (error) {
       console.error('Error checking download status:', error);
+    }
+  };
+
+  const checkEpisodeDownloadStatuses = async () => {
+    if (!item || !item.id || episodes.length === 0) return;
+    
+    try {
+      const activeDownloads = VideoDownloadService.getActiveDownloads();
+      const newEpisodeDownloadStatus = {};
+      const newEpisodeDownloadProgress = {};
+      
+      for (const episode of episodes) {
+        const episodeNumber = episode.episode_number;
+        const episodeKey = `s${selectedSeason}_e${episodeNumber}`;
+        
+        // Check if episode is downloaded
+        const isDownloaded = await VideoDownloadService.isEpisodeDownloaded(
+          item.id,
+          selectedSeason,
+          episodeNumber
+        );
+        
+        // Check if episode is currently downloading
+        const activeDownload = activeDownloads.find(
+          d => d.mediaId === item.id &&
+               d.mediaType === 'tv' &&
+               d.season === selectedSeason &&
+               d.episodeNumber === episodeNumber
+        );
+        
+        newEpisodeDownloadStatus[episodeKey] = {
+          isDownloaded,
+          isDownloading: !!activeDownload,
+          progress: activeDownload?.progress || 0,
+        };
+        
+        if (activeDownload) {
+          newEpisodeDownloadProgress[episodeKey] = activeDownload.progress || 0;
+        }
+      }
+      
+      setEpisodeDownloadStatus(newEpisodeDownloadStatus);
+      setEpisodeDownloadProgress(newEpisodeDownloadProgress);
+    } catch (error) {
+      console.error('Error checking episode download statuses:', error);
     }
   };
   
@@ -920,6 +1003,98 @@ export default function MovieDetailsScreen({ route, navigation }) {
     console.log('Item added to collection:', collection.name);
   };
 
+  const handleEpisodeDownload = async (episode) => {
+    if (!item || !episode || !item.id) return;
+    
+    const episodeNumber = episode.episode_number;
+    const episodeKey = `s${selectedSeason}_e${episodeNumber}`;
+    
+    // Check if already downloaded
+    const isDownloaded = await VideoDownloadService.isEpisodeDownloaded(
+      item.id,
+      selectedSeason,
+      episodeNumber
+    );
+    
+    if (isDownloaded) {
+      Alert.alert(
+        'Already Downloaded',
+        `Episode ${episodeNumber} is already downloaded. You can watch it offline.`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    
+    // Check if currently downloading
+    const activeDownloads = VideoDownloadService.getActiveDownloads();
+    const isDownloading = activeDownloads.some(
+      d => d.mediaId === item.id &&
+           d.mediaType === 'tv' &&
+           d.season === selectedSeason &&
+           d.episodeNumber === episodeNumber
+    );
+    
+    if (isDownloading) {
+      Alert.alert(
+        'Already Downloading',
+        `Episode ${episodeNumber} is currently being downloaded.`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    
+    // Confirm download
+    Alert.alert(
+      'Download Episode',
+      `Download "${episode.name || `Episode ${episodeNumber}`}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Download',
+          onPress: async () => {
+            try {
+              // Update download status
+              const newStatus = { ...episodeDownloadStatus };
+              newStatus[episodeKey] = {
+                isDownloaded: false,
+                isDownloading: true,
+                progress: 0,
+              };
+              setEpisodeDownloadStatus(newStatus);
+              
+              // Start download - progress updates will be handled by polling activeDownloads
+              // The progress callback is optional since we're polling activeDownloads every second
+              await VideoDownloadService.downloadEpisode(
+                item,
+                episode,
+                selectedSeason,
+                (progress) => {
+                  // Update progress in real-time (optional, polling also handles this)
+                  const updatedStatus = { ...episodeDownloadStatus };
+                  updatedStatus[episodeKey] = {
+                    isDownloaded: false,
+                    isDownloading: true,
+                    progress: progress,
+                  };
+                  setEpisodeDownloadStatus(updatedStatus);
+                }
+              );
+              
+              // Download completed - refresh status
+              await checkEpisodeDownloadStatuses();
+              Alert.alert('Success', 'Episode downloaded successfully!');
+            } catch (error) {
+              console.error('Error downloading episode:', error);
+              // Update status to not downloading
+              await checkEpisodeDownloadStatuses();
+              Alert.alert('Error', `Failed to download episode: ${error.message}`);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const headerTranslateY = scrollY.interpolate({
     inputRange: [-300, 0],
     outputRange: [150, 0],
@@ -1213,16 +1388,26 @@ export default function MovieDetailsScreen({ route, navigation }) {
                 </View>
               ) : episodes.length > 0 ? (
                 <View style={styles.episodesList}>
-                  {episodes.map((episode) => (
-                    <EpisodeItem
-                      key={episode.id}
-                      episode={episode}
-                      tvShow={item}
-                      season={selectedSeason}
-                      onPress={handleEpisodePress}
-                      progress={episodeProgress[episode.episode_number] || null}
-                    />
-                  ))}
+                  {episodes.map((episode) => {
+                    const episodeNumber = episode.episode_number;
+                    const episodeKey = `s${selectedSeason}_e${episodeNumber}`;
+                    const downloadStatus = episodeDownloadStatus[episodeKey] || { isDownloaded: false, isDownloading: false, progress: 0 };
+                    
+                    return (
+                      <EpisodeItem
+                        key={episode.id}
+                        episode={episode}
+                        tvShow={item}
+                        season={selectedSeason}
+                        onPress={handleEpisodePress}
+                        progress={episodeProgress[episodeNumber] || null}
+                        isDownloaded={downloadStatus.isDownloaded}
+                        isDownloading={downloadStatus.isDownloading}
+                        downloadProgress={downloadStatus.progress}
+                        onDownloadPress={handleEpisodeDownload}
+                      />
+                    );
+                  })}
                 </View>
               ) : (
                 <View style={styles.emptyContainer}>
