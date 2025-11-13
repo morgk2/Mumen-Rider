@@ -81,7 +81,73 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const [episodeProgress, setEpisodeProgress] = useState({});
   const [episodeDownloadStatus, setEpisodeDownloadStatus] = useState({}); // Track download status for each episode
   const [episodeDownloadProgress, setEpisodeDownloadProgress] = useState({}); // Track download progress for each episode
+  const [movieDetails, setMovieDetails] = useState(null); // Store full movie details for runtime, certification, tagline
+  const [isPlotExpanded, setIsPlotExpanded] = useState(false); // Track if plot is expanded
+  const [dominantColor, setDominantColor] = useState('#000000'); // Dominant color from backdrop
+  const [darkenedColor, setDarkenedColor] = useState('#000000'); // Darkened version of dominant color
   const scrollY = useRef(new Animated.Value(0)).current;
+
+  // Function to darken a color
+  const darkenColor = (color, amount = 0.5) => {
+    // Remove # if present
+    const hex = color.replace('#', '');
+    
+    // Convert to RGB
+    const r = parseInt(hex.substr(0, 2), 16);
+    const g = parseInt(hex.substr(2, 2), 16);
+    const b = parseInt(hex.substr(4, 2), 16);
+    
+    // Darken by multiplying by amount (0-1, where 0.5 = 50% darker)
+    const darkenedR = Math.max(0, Math.floor(r * amount));
+    const darkenedG = Math.max(0, Math.floor(g * amount));
+    const darkenedB = Math.max(0, Math.floor(b * amount));
+    
+    // Convert back to hex
+    return `#${darkenedR.toString(16).padStart(2, '0')}${darkenedG.toString(16).padStart(2, '0')}${darkenedB.toString(16).padStart(2, '0')}`;
+  };
+
+  // Convert hex to rgba
+  const hexToRgba = (hex, alpha = 1) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    if (!result) return `rgba(0, 0, 0, ${alpha})`;
+    
+    const r = parseInt(result[1], 16);
+    const g = parseInt(result[2], 16);
+    const b = parseInt(result[3], 16);
+    
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  };
+
+  // Extract dominant color from backdrop using a hash-based approach
+  const extractDominantColor = async (imageUrl) => {
+    if (!imageUrl) {
+      setDominantColor('#000000');
+      setDarkenedColor('#000000');
+      return;
+    }
+    
+    try {
+      // Generate a consistent color based on the image URL hash
+      const hash = imageUrl.split('').reduce((acc, char) => {
+        return char.charCodeAt(0) + ((acc << 5) - acc);
+      }, 0);
+      
+      const r = Math.abs(hash % 180) + 30;
+      const g = Math.abs((hash >> 8) % 180) + 30;
+      const b = Math.abs((hash >> 16) % 180) + 30;
+      
+      const color = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+      
+      setDominantColor(color);
+      // Darken the color (0.3 = 70% darker, making it quite dark)
+      const darkened = darkenColor(color, 0.3);
+      setDarkenedColor(darkened);
+    } catch (error) {
+      console.error('Error extracting color:', error);
+      setDominantColor('#000000');
+      setDarkenedColor('#000000');
+    }
+  };
 
   useEffect(() => {
     if (item) {
@@ -96,6 +162,19 @@ export default function MovieDetailsScreen({ route, navigation }) {
       if (isTVShow) {
         fetchTVDetails();
         fetchEpisodes(selectedSeason);
+      } else {
+        fetchMovieDetails();
+      }
+      
+      // Extract color from backdrop
+      const backdropUrl = item.backdrop_path 
+        ? TMDBService.getBackdropURL(item.backdrop_path, 'w780')
+        : item.poster_path 
+        ? TMDBService.getPosterURL(item.poster_path, 'w780')
+        : null;
+      
+      if (backdropUrl) {
+        extractDominantColor(backdropUrl);
       }
     }
   }, [item]);
@@ -238,6 +317,66 @@ export default function MovieDetailsScreen({ route, navigation }) {
       }
     } catch (error) {
       console.error('Error fetching TV details:', error);
+    }
+  };
+
+  const fetchMovieDetails = async () => {
+    if (!item || !item.id) return;
+    
+    try {
+      // Check cache first
+      const cachedDetails = await CacheService.getCachedMediaDetails(item.id, 'movie');
+      if (cachedDetails) {
+        // If cached details don't have release_dates, fetch them separately
+        if (cachedDetails.release_dates && cachedDetails.release_dates.results) {
+          setMovieDetails(cachedDetails);
+          return;
+        } else {
+          // Use cached details but fetch release dates
+          try {
+            const releaseDatesResponse = await fetch(
+              `https://api.themoviedb.org/3/movie/${item.id}/release_dates?api_key=738b4edd0a156cc126dc4a4b8aea4aca`
+            );
+            const releaseDates = await releaseDatesResponse.json();
+            if (releaseDates && releaseDates.results) {
+              cachedDetails.release_dates = releaseDates;
+              await CacheService.cacheMediaDetails(item.id, 'movie', cachedDetails);
+            }
+            setMovieDetails(cachedDetails);
+            return;
+          } catch (error) {
+            console.error('Error fetching release dates:', error);
+            // Still use cached details without release dates
+            setMovieDetails(cachedDetails);
+            return;
+          }
+        }
+      }
+      
+      // Fetch movie details and release dates in parallel
+      const [detailsResponse, releaseDatesResponse] = await Promise.all([
+        fetch(`https://api.themoviedb.org/3/movie/${item.id}?api_key=738b4edd0a156cc126dc4a4b8aea4aca`),
+        fetch(`https://api.themoviedb.org/3/movie/${item.id}/release_dates?api_key=738b4edd0a156cc126dc4a4b8aea4aca`)
+      ]);
+      
+      const details = await detailsResponse.json();
+      const releaseDates = await releaseDatesResponse.json();
+      
+      if (details) {
+        // Merge release dates into details
+        if (releaseDates && releaseDates.results) {
+          details.release_dates = releaseDates;
+        }
+        setMovieDetails(details);
+        // Cache the details
+        await CacheService.cacheMediaDetails(item.id, 'movie', details);
+      }
+    } catch (error) {
+      console.error('Error fetching movie details:', error);
+      // Still try to set basic details if available from item
+      if (item.runtime || item.tagline) {
+        setMovieDetails(item);
+      }
     }
   };
 
@@ -1120,12 +1259,12 @@ export default function MovieDetailsScreen({ route, navigation }) {
   });
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: darkenedColor }]}>
       <Animated.ScrollView
         showsVerticalScrollIndicator={false}
         bounces={true}
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { backgroundColor: darkenedColor }]}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
           { useNativeDriver: false }
@@ -1156,9 +1295,16 @@ export default function MovieDetailsScreen({ route, navigation }) {
             )}
           </Animated.View>
           
-          {/* Gradient fade to black at bottom */}
+          {/* Gradient fade to darkened color at bottom */}
           <LinearGradient
-            colors={['transparent', 'transparent', 'rgba(0,0,0,0.3)', 'rgba(0,0,0,0.8)', '#000', '#000']}
+            colors={[
+              'transparent', 
+              'transparent', 
+              hexToRgba(darkenedColor, 0.25), 
+              hexToRgba(darkenedColor, 0.8), 
+              darkenedColor, 
+              darkenedColor
+            ]}
             locations={[0, 0.2, 0.5, 0.85, 0.95, 1]}
             style={styles.gradient}
           />
@@ -1212,7 +1358,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
         </View>
 
         {/* Content Section */}
-        <View style={styles.contentSection}>
+        <View style={[styles.contentSection, { backgroundColor: darkenedColor }]}>
           {/* Play and Bookmark Section */}
           <View style={styles.actionSection}>
             <TouchableOpacity
@@ -1288,6 +1434,109 @@ export default function MovieDetailsScreen({ route, navigation }) {
               />
             </TouchableOpacity>
           </View>
+
+          {/* Plot/Story Section */}
+          {overview && overview.trim().length > 0 && (
+            <View style={styles.plotSection}>
+              <Text style={styles.plotTitle}>Story</Text>
+              <Text 
+                style={styles.plotText}
+                numberOfLines={isPlotExpanded ? undefined : 4}
+              >
+                {overview}
+              </Text>
+              {overview.length > 150 && (
+                <TouchableOpacity
+                  onPress={() => setIsPlotExpanded(!isPlotExpanded)}
+                  style={styles.plotToggleButton}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.plotToggleText}>
+                    {isPlotExpanded ? 'Show Less' : 'Show More'}
+                  </Text>
+                  <Ionicons 
+                    name={isPlotExpanded ? 'chevron-up' : 'chevron-down'} 
+                    size={16} 
+                    color="rgba(255, 255, 255, 0.7)" 
+                    style={{ marginLeft: 4 }}
+                  />
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
+          {/* Movie Info Panel - Only for movies */}
+          {isMovie && (
+            <View style={styles.movieInfoPanel}>
+              <View style={styles.movieInfoRow}>
+                {/* Runtime */}
+                {(() => {
+                  const runtime = movieDetails?.runtime || item?.runtime;
+                  return runtime ? (
+                    <View style={styles.movieInfoItem}>
+                      <Ionicons name="time-outline" size={18} color="rgba(255, 255, 255, 0.7)" />
+                      <Text style={styles.movieInfoText}>
+                        {runtime} min
+                      </Text>
+                    </View>
+                  ) : null;
+                })()}
+                
+                {/* Release Date */}
+                {formattedDate && (
+                  <View style={styles.movieInfoItem}>
+                    <Ionicons name="calendar-outline" size={18} color="rgba(255, 255, 255, 0.7)" />
+                    <Text style={styles.movieInfoText}>{formattedDate}</Text>
+                  </View>
+                )}
+                
+                {/* Age Rating */}
+                {(() => {
+                  let certification = null;
+                  if (movieDetails?.release_dates?.results) {
+                    // Try to get US certification first
+                    const usRelease = movieDetails.release_dates.results.find(r => r.iso_3166_1 === 'US');
+                    if (usRelease?.release_dates?.[0]?.certification) {
+                      certification = usRelease.release_dates[0].certification;
+                    } else if (movieDetails.release_dates.results[0]?.release_dates?.[0]?.certification) {
+                      // Fallback to first available certification
+                      certification = movieDetails.release_dates.results[0].release_dates[0].certification;
+                    }
+                  }
+                  return certification ? (
+                    <View style={styles.movieInfoItem}>
+                      <Ionicons name="shield-outline" size={18} color="rgba(255, 255, 255, 0.7)" />
+                      <Text style={styles.movieInfoText}>{certification}</Text>
+                    </View>
+                  ) : null;
+                })()}
+              </View>
+              
+              {/* Genres */}
+              {genres.length > 0 && (
+                <View style={styles.movieInfoGenres}>
+                  <Ionicons name="film-outline" size={18} color="rgba(255, 255, 255, 0.7)" style={{ marginRight: 8 }} />
+                  <View style={styles.movieInfoGenresList}>
+                    {genres.map((genre, index) => (
+                      <Text key={index} style={styles.movieInfoGenreText}>
+                        {genre}{index < genres.length - 1 ? ' • ' : ''}
+                      </Text>
+                    ))}
+                  </View>
+                </View>
+              )}
+              
+              {/* Tagline */}
+              {(() => {
+                const tagline = movieDetails?.tagline || item?.tagline;
+                return tagline ? (
+                  <View style={styles.movieInfoTagline}>
+                    <Text style={styles.movieInfoTaglineText}>"{tagline}"</Text>
+                  </View>
+                ) : null;
+              })()}
+            </View>
+          )}
 
           {/* Trailer Section */}
           {trailer && (
@@ -1496,13 +1745,13 @@ export default function MovieDetailsScreen({ route, navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
+    backgroundColor: '#000', // Will be overridden dynamically
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    backgroundColor: '#000',
+    backgroundColor: '#000', // Will be overridden dynamically
   },
   heroSection: {
     width: SCREEN_WIDTH,
@@ -1652,7 +1901,7 @@ const styles = StyleSheet.create({
   contentSection: {
     padding: 16,
     paddingTop: 40,
-    backgroundColor: '#000',
+    backgroundColor: '#000', // Will be overridden dynamically
     position: 'relative',
     marginTop: -20,
   },
@@ -1873,6 +2122,32 @@ const styles = StyleSheet.create({
   reviewsList: {
     marginTop: 0,
   },
+  plotSection: {
+    marginTop: 32,
+  },
+  plotTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 12,
+  },
+  plotText: {
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.9)',
+    lineHeight: 22,
+    textAlign: 'left',
+  },
+  plotToggleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  plotToggleText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '600',
+  },
   trailerSection: {
     marginTop: 32,
   },
@@ -1932,6 +2207,59 @@ const styles = StyleSheet.create({
   trailerType: {
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.6)',
+  },
+  movieInfoPanel: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 32,
+    marginBottom: 0,
+  },
+  movieInfoRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  movieInfoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 20,
+    marginBottom: 8,
+  },
+  movieInfoText: {
+    fontSize: 14,
+    color: '#fff',
+    marginLeft: 6,
+    fontWeight: '500',
+  },
+  movieInfoGenres: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  movieInfoGenresList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    flex: 1,
+  },
+  movieInfoGenreText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontWeight: '500',
+  },
+  movieInfoTagline: {
+    marginTop: 4,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  movieInfoTaglineText: {
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    lineHeight: 22,
   },
 });
 

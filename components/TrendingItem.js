@@ -57,11 +57,11 @@ export const TrendingItem = ({ item, onPress, variant = 'horizontal' }) => {
       </View>
 
       <View style={[styles.infoContainer, isGrid && styles.gridInfoContainer]}>
-        <Text style={styles.title} numberOfLines={2}>
+        <Text style={[styles.title, isGrid && styles.gridTitle]} numberOfLines={2}>
           {displayTitle}
         </Text>
         {year ? (
-          <Text style={styles.year}>{year}</Text>
+          <Text style={[styles.year, isGrid && styles.gridYear]}>{year}</Text>
         ) : null}
       </View>
     </TouchableOpacity>
@@ -130,8 +130,18 @@ const styles = StyleSheet.create({
     color: '#fff',
     marginBottom: 4,
   },
+  gridTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 4,
+  },
   year: {
     fontSize: 12,
+    color: '#888',
+  },
+  gridYear: {
+    fontSize: 13,
     color: '#888',
   },
 });

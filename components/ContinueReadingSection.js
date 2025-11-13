@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { ContinueReadingItem } from './ContinueReadingItem';
 
-export const ContinueReadingSection = ({ items, onItemPress }) => {
+export const ContinueReadingSection = ({ items, onItemPress, onDelete, onViewDetails, navigation }) => {
   if (!items || items.length === 0) {
     return null;
   }
@@ -24,6 +24,9 @@ export const ContinueReadingSection = ({ items, onItemPress }) => {
             item={itemData.item}
             progress={itemData.progress}
             onPress={onItemPress}
+            onDelete={onDelete}
+            onViewDetails={onViewDetails}
+            navigation={navigation}
           />
         ))}
       </ScrollView>

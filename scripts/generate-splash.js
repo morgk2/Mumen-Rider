@@ -13,3 +13,5 @@ console.log('Note: Expo native splash screens require PNG images');
 console.log('The SVG file has been created at: assets/splash-circle.svg');
 console.log('You can convert it to PNG using an online tool or image editor');
 
+
+

@@ -164,6 +164,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [audioTracks, setAudioTracks] = useState([]);
   const [selectedAudioTrack, setSelectedAudioTrack] = useState(null);
   const [showAudioSettingsModal, setShowAudioSettingsModal] = useState(false);
+  const [showServerSettingsModal, setShowServerSettingsModal] = useState(false);
   const [subtitleSearchQuery, setSubtitleSearchQuery] = useState('');
   const [subtitleSearchLanguage, setSubtitleSearchLanguage] = useState('eng');
   const [subtitleSearchResults, setSubtitleSearchResults] = useState([]);
@@ -258,6 +259,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   
   // Video source state
   const [videoSource, setVideoSource] = useState('vixsrc');
+  const [isRetryingWithVidfast, setIsRetryingWithVidfast] = useState(false);
   
   // Server selection state (for Vidfast)
   const [availableServers, setAvailableServers] = useState([]);
@@ -743,6 +745,10 @@ export default function VideoPlayerScreen({ route, navigation }) {
   // Animation values for fullscreen audio settings modal (Netflix-style)
   const audioSettingsModalOpacity = useRef(new Animated.Value(0)).current;
   const audioSettingsModalScale = useRef(new Animated.Value(0.95)).current;
+
+  // Animation values for fullscreen server settings modal (Netflix-style)
+  const serverSettingsModalOpacity = useRef(new Animated.Value(0)).current;
+  const serverSettingsModalScale = useRef(new Animated.Value(0.95)).current;
   
   
   // Animation values for server modal
@@ -994,7 +1000,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   // Collapse speed and subtitle options when controls are hidden (but keep fullscreen modal open)
   useEffect(() => {
-    if (!showControls && !showSubtitleSettingsModal && !showAudioSettingsModal) {
+    if (!showControls && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal) {
       if (isSpeedExpanded) {
         setIsSpeedExpanded(false);
         Animated.spring(speedButtonWidth, {
@@ -1011,11 +1017,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
         setIsSubtitleSearchMode(false);
       }
     }
-  }, [showControls, isSpeedExpanded, isSubtitleExpanded, isSubtitleSearchMode, isAppearanceMode, isDelayMode, showSubtitleSettingsModal, showAudioSettingsModal]);
+  }, [showControls, isSpeedExpanded, isSubtitleExpanded, isSubtitleSearchMode, isAppearanceMode, isDelayMode, showSubtitleSettingsModal, showAudioSettingsModal, showServerSettingsModal]);
 
   // Disable controls auto-hide when any modal is active
   useEffect(() => {
-    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal;
+    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal;
     
     if (hasActiveModal) {
       // Clear any existing timer when modal opens
@@ -1141,6 +1147,36 @@ export default function VideoPlayerScreen({ route, navigation }) {
       ]).start();
     }
   }, [showAudioSettingsModal]);
+
+  // Animate server settings modal (Netflix-style)
+  useEffect(() => {
+    if (showServerSettingsModal) {
+      // Animate in
+      Animated.timing(serverSettingsModalOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+      Animated.spring(serverSettingsModalScale, {
+        toValue: 1,
+        tension: 50,
+        friction: 7,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      // Animate out
+      Animated.timing(serverSettingsModalOpacity, {
+        toValue: 0,
+        duration: 150,
+        useNativeDriver: true,
+      }).start();
+      Animated.timing(serverSettingsModalScale, {
+        toValue: 0.95,
+        duration: 150,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [showServerSettingsModal]);
 
   // Animate server modal appearance/disappearance
   useEffect(() => {
@@ -1288,7 +1324,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
       clearTimeout(controlsTimeoutRef.current);
     }
     // Don't auto-hide controls if any modal is active
-    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal;
+    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal;
     if (!isControlsLocked && showControls && !hasActiveModal) {
       controlsTimeoutRef.current = setTimeout(() => {
         setShowControls(false);
@@ -1300,7 +1336,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
     if (!isControlsLocked) {
       setShowControls(true);
       // Don't start timer if any modal is active
-      const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal;
+      const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal;
       if (!hasActiveModal) {
       startControlsTimer();
       }
@@ -1345,6 +1381,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
     try {
       setLoading(true);
       setError(null);
+      setIsRetryingWithVidfast(false);
 
       if (!item || !item.id) {
         setError('Invalid item');
@@ -1395,10 +1432,35 @@ export default function VideoPlayerScreen({ route, navigation }) {
           
           console.log('Downloaded video file exists, size:', fileInfo.size, 'bytes');
           
+          // Convert file path to proper file:// URI for expo-video
+          // expo-video requires file:// URIs for local files (similar to Sora's implementation)
+          // Sora uses asset.localURL.absoluteString which ensures proper file:// format
+          let fileUri = localVideoPath;
+          if (!fileUri.startsWith('file://')) {
+            // If path doesn't start with file://, convert it
+            // Normalize the path first
+            if (fileUri.startsWith(FileSystem.documentDirectory)) {
+              // Path already includes document directory
+              fileUri = `file://${fileUri}`;
+            } else if (fileUri.startsWith('/')) {
+              // Absolute path starting with / - add file:// prefix
+              fileUri = `file://${fileUri}`;
+            } else {
+              // Relative path - prepend document directory
+              const normalizedPath = fileUri.replace(/^\/+/, ''); // Remove leading slashes
+              fileUri = `file://${FileSystem.documentDirectory}${normalizedPath}`;
+            }
+          }
+          
+          // Ensure the URI doesn't have double slashes (except after file:)
+          fileUri = fileUri.replace(/([^:]\/)\/+/g, '$1');
+          
+          console.log('Converted file path to URI:', fileUri);
+          
           // For M3U8 files, ensure the file path is properly formatted
           // expo-video should support local file:// URIs
           if (localVideoPath.toLowerCase().endsWith('.m3u8')) {
-            console.log('Playing local M3U8 playlist:', localVideoPath);
+            console.log('Playing local M3U8 playlist:', fileUri);
             // The playlist should contain absolute file:// URIs for segments
             // Verify playlist can be read
             try {
@@ -1409,7 +1471,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
             }
           }
           
-        setStreamUrl(localVideoPath);
+        setStreamUrl(fileUri);
         
         // Set up subtitle tracks from downloaded data if available
         const tracks = [
@@ -1433,14 +1495,64 @@ export default function VideoPlayerScreen({ route, navigation }) {
         setVideoSource(source);
 
         // Select the appropriate service
-        const service = source === 'n3tflix' ? N3tflixService : source === 'vidfast' ? VidfastService : VixsrcService;
-
+        let service = source === 'n3tflix' ? N3tflixService : source === 'vidfast' ? VidfastService : VixsrcService;
+        let currentSource = source;
         let result = null;
 
-        if (episode && season && episodeNumber) {
-          result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
-        } else {
-          result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
+        try {
+          if (episode && season && episodeNumber) {
+            result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
+          } else {
+            result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
+          }
+        } catch (serviceError) {
+          // Check if it's a 404 or 403 error from vixsrc
+          const errorMessage = serviceError?.message || String(serviceError);
+          const is404or403 = errorMessage.includes('404') || errorMessage.includes('403');
+          const isVixsrc = currentSource === 'vixsrc' || (!currentSource || currentSource === 'vixsrc');
+          
+          if (is404or403 && isVixsrc) {
+            console.log('Vixsrc returned 404/403, switching to vidfast...');
+            setIsRetryingWithVidfast(true);
+            service = VidfastService;
+            currentSource = 'vidfast';
+            setVideoSource('vidfast');
+            
+            // Retry with vidfast
+            if (episode && season && episodeNumber) {
+              result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
+            } else {
+              result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
+            }
+          } else {
+            // Re-throw if it's not a vixsrc 404/403
+            throw serviceError;
+          }
+        }
+
+        // Check if vixsrc returned null streamUrl (which happens on 404/403)
+        // VixsrcService catches errors and returns null instead of throwing
+        // Only check if we haven't already retried and the original source was vixsrc
+        if ((!result || !result.streamUrl) && source === 'vixsrc' && currentSource === 'vixsrc') {
+          console.log('[VideoPlayer] Vixsrc returned null streamUrl, switching to vidfast...');
+          console.log('[VideoPlayer] Result:', result, 'Source:', source, 'CurrentSource:', currentSource);
+          setIsRetryingWithVidfast(true);
+          service = VidfastService;
+          currentSource = 'vidfast';
+          setVideoSource('vidfast');
+          
+          // Retry with vidfast
+          try {
+            if (episode && season && episodeNumber) {
+              result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
+            } else {
+              result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
+            }
+            console.log('[VideoPlayer] Vidfast result:', result ? 'Success' : 'Failed');
+          } catch (vidfastError) {
+            console.error('[VideoPlayer] Vidfast also failed:', vidfastError);
+            // Let it fall through to error handling
+          }
         }
 
         if (result && result.streamUrl) {
@@ -1491,16 +1603,20 @@ export default function VideoPlayerScreen({ route, navigation }) {
           }
           
           // Store server list and current server for Vidfast
-          if (source === 'vidfast' && result.serverList) {
+          if (currentSource === 'vidfast' && result.serverList) {
             setAvailableServers(result.serverList);
             setCurrentServer(result.currentServer);
           }
+          
+          // Reset retry flag after successful fetch
+          setIsRetryingWithVidfast(false);
         } else {
           setError('Could not extract video stream URL.');
         }
       }
     } catch (err) {
       console.error('Error fetching stream:', err);
+      setIsRetryingWithVidfast(false);
       setError('Failed to load video');
       setLoading(false);
     }
@@ -1816,6 +1932,34 @@ export default function VideoPlayerScreen({ route, navigation }) {
     setExpandedLanguageGroup(null);
     setSubtitleSearchResults([]);
     setSubtitleSearchQuery('');
+    // Show controls again after closing
+    resetControlsTimer();
+  };
+
+  const toggleServerSettingsModal = () => {
+    resetControlsTimer();
+    // Show fullscreen server settings modal (Netflix-style)
+    setShowServerSettingsModal(true);
+    // Hide other modals
+    setIsSpeedExpanded(false);
+    if (isSubtitleExpanded) {
+      setIsSubtitleExpanded(false);
+    }
+    if (isServerExpanded) {
+      setIsServerExpanded(false);
+    }
+    if (showSubtitleSettingsModal) {
+      setShowSubtitleSettingsModal(false);
+    }
+    if (showAudioSettingsModal) {
+      setShowAudioSettingsModal(false);
+    }
+    // Hide controls when server settings modal is shown
+    setShowControls(false);
+  };
+
+  const closeServerSettingsModal = () => {
+    setShowServerSettingsModal(false);
     // Show controls again after closing
     resetControlsTimer();
   };
@@ -2538,8 +2682,21 @@ export default function VideoPlayerScreen({ route, navigation }) {
                   <View style={[styles.loadingBackdrop, { backgroundColor: '#000' }]} />
                 )}
                 <View style={styles.loadingOverlay}>
+                  <TouchableOpacity
+                    style={[styles.loadingBackButton, { top: insets.top + 16 }]}
+                    onPress={handleBack}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.loadingBackButtonContainer}>
+                      <Ionicons name="arrow-back" size={24} color="#fff" />
+                    </View>
+                  </TouchableOpacity>
                   <ActivityIndicator size="large" color="#fff" />
-                  <Text style={styles.loadingText}>Loading video...</Text>
+                  <Text style={styles.loadingText}>
+                    {isRetryingWithVidfast 
+                      ? "fuck, this is taking too long... hang in there twin"
+                      : "Loading video..."}
+                  </Text>
                 </View>
               </>
             );
@@ -2577,6 +2734,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                 contentFit="contain"
                 nativeControls={false}
                 allowsFullscreen={false}
+                allowsPictureInPicture={true}
                 onLoadStart={() => {
                 // Ensure audio is enabled when video loads
                   if (player) {
@@ -2620,6 +2778,29 @@ export default function VideoPlayerScreen({ route, navigation }) {
             )}
           </Animated.View>
 
+          {/* Loading Overlay with Back Button (when video is loading after playing) */}
+          {loading && streamUrl && (
+            <View style={styles.videoLoadingOverlay}>
+              <TouchableOpacity
+                style={[styles.videoLoadingBackButton, { top: insets.top + 16 }]}
+                onPress={handleBack}
+                activeOpacity={0.7}
+              >
+                <View style={styles.loadingBackButtonContainer}>
+                  <Ionicons name="arrow-back" size={24} color="#fff" />
+                </View>
+              </TouchableOpacity>
+              <View style={styles.videoLoadingContent}>
+                <ActivityIndicator size="large" color="#fff" />
+                <Text style={styles.videoLoadingText}>
+                  {isRetryingWithVidfast 
+                    ? "fuck, this is taking too long... hang in there twin"
+                    : "Loading video..."}
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* Dim Overlay */}
           <Animated.View 
             style={[
@@ -2654,9 +2835,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
               
               lastTapTime.current = now;
             }}
-            disabled={showSubtitleSettingsModal || showAudioSettingsModal}
+            disabled={showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal}
           >
-            {!isControlsLocked && !showSubtitleSettingsModal && !showAudioSettingsModal && (
+            {!isControlsLocked && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && (
               <>
                 {/* Top Bar */}
                 <Animated.View 
@@ -2751,7 +2932,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                 </Animated.View>
 
                 {/* Center Controls */}
-                {!showSubtitleSettingsModal && !showAudioSettingsModal && (
+                {!showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && (
                 <Animated.View 
                   style={[
                     styles.centerControls,
@@ -2807,7 +2988,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                 )}
 
                 {/* Bottom Controls */}
-                {!showSubtitleSettingsModal && !showAudioSettingsModal && (
+                {!showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && (
                 <Animated.View 
                   style={[
                     styles.bottomControls,
@@ -2854,7 +3035,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                           <View style={styles.serverButtonWrapper}>
                             <TouchableOpacity
                                   style={styles.controlPillButton}
-                              onPress={toggleServerMenu}
+                              onPress={toggleServerSettingsModal}
                               activeOpacity={0.7}
                             >
                                   <Ionicons name="server" size={18} color="#fff" />
@@ -3039,7 +3220,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
             )}
 
             {/* Locked Controls Indicator */}
-            {isControlsLocked && !showControls && !showSubtitleSettingsModal && (
+            {isControlsLocked && !showControls && !showSubtitleSettingsModal && !showServerSettingsModal && (
                           <TouchableOpacity
                 style={styles.unlockButton}
                 onPress={toggleLock}
@@ -3959,9 +4140,108 @@ export default function VideoPlayerScreen({ route, navigation }) {
         </Animated.View>
       )}
 
+      {/* Server Settings Modal (Netflix-style) */}
+      {showServerSettingsModal && (
+        <Animated.View
+          style={[
+            styles.subtitleSettingsModalOverlay,
+            {
+              opacity: serverSettingsModalOpacity,
+            }
+          ]}
+          pointerEvents="auto"
+        >
+          <TouchableOpacity
+            style={styles.subtitleSettingsModalBackdrop}
+            activeOpacity={1}
+            onPress={closeServerSettingsModal}
+          />
+          <Animated.View
+            style={[
+              styles.subtitleSettingsModalContent,
+              {
+                transform: [{ scale: serverSettingsModalScale }],
+              }
+            ]}
+            pointerEvents="auto"
+          >
+            {/* Close Button */}
+            <TouchableOpacity
+              style={styles.subtitleSettingsCloseButton}
+              onPress={closeServerSettingsModal}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close" size={28} color="#fff" />
+            </TouchableOpacity>
+
+            {/* Title */}
+            <View style={styles.subtitleSettingsTitleContainer}>
+              <Text style={styles.subtitleSettingsTitle}>Servers</Text>
+            </View>
+
+            {/* Server Selection Content */}
+            <ScrollView
+              style={styles.subtitleSettingsScrollView}
+              contentContainerStyle={styles.subtitleSettingsScrollContent}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled={true}
+            >
+              {availableServers.length > 0 ? (
+                <View style={styles.subtitleSettingsSection}>
+                  <Text style={styles.subtitleSettingsSectionTitle}>Available Servers</Text>
+                  <View style={styles.subtitleSettingsTracksList}>
+                    {availableServers.map((server, index) => {
+                      const isSelected = currentServer === server.name;
+                      return (
+                        <TouchableOpacity
+                          key={index}
+                          style={[
+                            styles.subtitleSettingsTrackItem,
+                            isSelected && styles.subtitleSettingsTrackItemActive,
+                          ]}
+                          onPress={async () => {
+                            closeServerSettingsModal();
+                            setLoading(true);
+                            try {
+                              await fetchStreamUrl(server.name);
+                            } catch (error) {
+                              console.error('Error switching server:', error);
+                              setError('Failed to switch server');
+                              setLoading(false);
+                            }
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Text
+                            style={[
+                              styles.subtitleSettingsTrackItemText,
+                              isSelected && styles.subtitleSettingsTrackItemTextActive,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {server.name || `Server ${index + 1}`}
+                          </Text>
+                          {isSelected && (
+                            <Ionicons name="checkmark" size={20} color="#fff" style={styles.subtitleSettingsTrackItemCheck} />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.subtitleSettingsEmptyState}>
+                  <Text style={styles.subtitleSettingsEmptyText}>No servers available</Text>
+                </View>
+              )}
+            </ScrollView>
+          </Animated.View>
+        </Animated.View>
+      )}
+
       {/* Subtitle Overlay - Positioned above bottom controls, moves up when controls appear */}
       {/* Hide subtitles when subtitle settings modal is open */}
-      {currentSubtitleText && selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' && !showSubtitleSettingsModal && !showAudioSettingsModal && (
+      {currentSubtitleText && selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && (
         <Animated.View 
           style={[
                 styles.subtitleOverlay,
@@ -4029,6 +4309,49 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  },
+  loadingBackButton: {
+    position: 'absolute',
+    left: 16,
+    zIndex: 10000,
+  },
+  loadingBackButtonContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  videoLoadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    zIndex: 1000,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoLoadingBackButton: {
+    position: 'absolute',
+    left: 16,
+    zIndex: 10001,
+  },
+  videoLoadingContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  videoLoadingText: {
+    color: '#fff',
+    marginTop: 16,
+    fontSize: 16,
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   loadingText: {
     color: '#fff',

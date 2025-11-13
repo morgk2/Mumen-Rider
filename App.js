@@ -12,6 +12,7 @@ import HomeScreen from './screens/HomeScreen';
 import SearchScreen from './screens/SearchScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import CollectionDetailsScreen from './screens/CollectionDetailsScreen';
+import CollectionDetailScreen from './screens/CollectionDetailScreen';
 import MangaScreen from './screens/MangaScreen';
 import MovieDetailsScreen from './screens/MovieDetailsScreen';
 import MangaDetailsScreen from './screens/MangaDetailsScreen';
@@ -33,6 +34,7 @@ function HomeStack() {
       <Stack.Screen name="HomeMain" component={HomeScreen} />
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
+      <Stack.Screen name="CollectionDetail" component={CollectionDetailScreen} />
       <Stack.Screen 
         name="VideoPlayer" 
         component={VideoPlayerScreen}

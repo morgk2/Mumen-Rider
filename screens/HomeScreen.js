@@ -21,7 +21,8 @@ import { Alert } from 'react-native';
 export default function HomeScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const scrollY = useRef(new Animated.Value(0)).current;
-  const [featuredItem, setFeaturedItem] = useState(null);
+  const [featuredItems, setFeaturedItems] = useState([]);
+  const [currentFeaturedIndex, setCurrentFeaturedIndex] = useState(0);
   const [trendingMovies, setTrendingMovies] = useState([]);
   const [trendingShows, setTrendingShows] = useState([]);
   const [trendingAnime, setTrendingAnime] = useState([]);
@@ -71,15 +72,26 @@ export default function HomeScreen({ navigation }) {
     setTrendingAnime(anime);
     setLoadingAnime(false);
     
-    // Set featured item from first trending movie or show (if available)
-    let featured = null;
-    if (movies.length > 0 && movies[0].backdrop_path) {
-      featured = { ...movies[0], media_type: 'movie' };
-    } else if (shows.length > 0 && shows[0].backdrop_path) {
-      featured = { ...shows[0], media_type: 'tv' };
-    }
-    if (featured) {
-      setFeaturedItem(featured);
+    // Create featured items list from trending movies and shows with backdrops
+    const featured = [];
+    
+    // Add movies with backdrops (up to 5)
+    movies.slice(0, 5).forEach(movie => {
+      if (movie.backdrop_path) {
+        featured.push({ ...movie, media_type: 'movie' });
+      }
+    });
+    
+    // Add shows with backdrops (up to 5)
+    shows.slice(0, 5).forEach(show => {
+      if (show.backdrop_path) {
+        featured.push({ ...show, media_type: 'tv' });
+      }
+    });
+    
+    if (featured.length > 0) {
+      setFeaturedItems(featured);
+      setCurrentFeaturedIndex(0);
     }
     setLoadingFeatured(false);
   };
@@ -211,6 +223,25 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
+  const handleContinueWatchingDelete = async (item, progress) => {
+    try {
+      await WatchProgressService.removeProgress(
+        item.id,
+        progress.mediaType,
+        progress.season,
+        progress.episodeNumber
+      );
+      // Refresh the continue watching list
+      fetchContinueWatching();
+    } catch (error) {
+      console.error('Error deleting continue watching item:', error);
+    }
+  };
+
+  const handleContinueWatchingViewDetails = (item) => {
+    navigation.navigate('MovieDetails', { item });
+  };
+
   const playVideo = async (item, episode, season, episodeNumber, resumePosition, externalPlayer) => {
     // If external player is selected and not Default, fetch stream URL and open in external player
     if (externalPlayer && externalPlayer !== 'Default') {
@@ -300,6 +331,24 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
+  const handleContinueReadingDelete = async (item, progress) => {
+    try {
+      await ReadProgressService.removeProgress(
+        item.id,
+        progress.chapterNumber
+      );
+      // Refresh the continue reading list
+      fetchContinueReading();
+    } catch (error) {
+      console.error('Error deleting continue reading item:', error);
+    }
+  };
+
+  const handleContinueReadingViewDetails = (item) => {
+    navigation.navigate('MangaDetails', { item });
+  };
+
+
   const handleContinueReadingPress = async (item, progress) => {
     if (!navigation || !item || !progress) return;
     
@@ -339,10 +388,23 @@ export default function HomeScreen({ navigation }) {
       >
         {/* Featured Content - Extends to top edge */}
         <View style={{ marginTop: -insets.top }}>
-          {loadingFeatured ? (
+          {loadingFeatured || featuredItems.length === 0 ? (
             <FeaturedContentSkeleton />
           ) : (
-            <FeaturedContent item={featuredItem} navigation={navigation} scrollY={scrollY} />
+            <FeaturedContent 
+              item={featuredItems[currentFeaturedIndex]} 
+              navigation={navigation} 
+              scrollY={scrollY}
+              currentIndex={currentFeaturedIndex}
+              totalItems={featuredItems.length}
+              featuredItems={featuredItems}
+              onNext={() => {
+                setCurrentFeaturedIndex((prev) => (prev + 1) % featuredItems.length);
+              }}
+              onPrevious={() => {
+                setCurrentFeaturedIndex((prev) => (prev === 0 ? featuredItems.length - 1 : prev - 1));
+              }}
+            />
           )}
         </View>
 
@@ -351,6 +413,9 @@ export default function HomeScreen({ navigation }) {
           <ContinueWatchingSection
             items={continueWatchingItems}
             onItemPress={handleContinueWatchingPress}
+            onDelete={handleContinueWatchingDelete}
+            onViewDetails={handleContinueWatchingViewDetails}
+            navigation={navigation}
           />
         )}
 
@@ -359,6 +424,9 @@ export default function HomeScreen({ navigation }) {
           <ContinueReadingSection
             items={continueReadingItems}
             onItemPress={handleContinueReadingPress}
+            onDelete={handleContinueReadingDelete}
+            onViewDetails={handleContinueReadingViewDetails}
+            navigation={navigation}
           />
         )}
 

@@ -169,5 +169,55 @@ export const TMDBService = {
     if (!key) return null;
     return `https://www.youtube.com/embed/${key}`;
   },
+
+  // Fetch top rated movies (up to 400)
+  async fetchTopRatedMovies(maxResults = 400) {
+    try {
+      const allMovies = [];
+      const pagesToFetch = Math.ceil(maxResults / 20); // 20 results per page
+      
+      for (let page = 1; page <= pagesToFetch && allMovies.length < maxResults; page++) {
+        const response = await fetch(
+          `${BASE_URL}/movie/top_rated?api_key=${API_KEY}&page=${page}`
+        );
+        const data = await response.json();
+        if (data.results && data.results.length > 0) {
+          allMovies.push(...data.results);
+        } else {
+          break; // No more pages
+        }
+      }
+      
+      return allMovies.slice(0, maxResults);
+    } catch (error) {
+      console.error('Error fetching top rated movies:', error);
+      return [];
+    }
+  },
+
+  // Fetch top rated TV shows (up to 400)
+  async fetchTopRatedTV(maxResults = 400) {
+    try {
+      const allShows = [];
+      const pagesToFetch = Math.ceil(maxResults / 20); // 20 results per page
+      
+      for (let page = 1; page <= pagesToFetch && allShows.length < maxResults; page++) {
+        const response = await fetch(
+          `${BASE_URL}/tv/top_rated?api_key=${API_KEY}&page=${page}`
+        );
+        const data = await response.json();
+        if (data.results && data.results.length > 0) {
+          allShows.push(...data.results);
+        } else {
+          break; // No more pages
+        }
+      }
+      
+      return allShows.slice(0, maxResults);
+    } catch (error) {
+      console.error('Error fetching top rated TV shows:', error);
+      return [];
+    }
+  },
 };
 
