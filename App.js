@@ -18,12 +18,14 @@ import MovieDetailsScreen from './screens/MovieDetailsScreen';
 import MangaDetailsScreen from './screens/MangaDetailsScreen';
 import MangaReaderScreen from './screens/MangaReaderScreen';
 import VideoPlayerScreen from './screens/VideoPlayerScreen';
+import EpisodePage from './screens/EpisodePage';
 import SettingsScreen from './screens/SettingsScreen';
 import SubtitleSettingsScreen from './screens/SubtitleSettingsScreen';
 import PlayerSettingsScreen from './screens/PlayerSettingsScreen';
 import VideoSourceSettingsScreen from './screens/VideoSourceSettingsScreen';
 import DownloadsScreen from './screens/DownloadsScreen';
 import DownloadedMangaDetailsScreen from './screens/DownloadedMangaDetailsScreen';
+import { VideoPlayerProvider } from './contexts/VideoPlayerContext';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -36,11 +38,18 @@ function HomeStack() {
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
       <Stack.Screen name="CollectionDetail" component={CollectionDetailScreen} />
       <Stack.Screen 
+        name="EpisodePage" 
+        component={EpisodePage}
+        options={{
+          headerShown: false,
+        }}
+      />
+      <Stack.Screen 
         name="VideoPlayer" 
         component={VideoPlayerScreen}
         options={{
           presentation: 'fullScreenModal',
-          animation: 'fade',
+          animation: 'slide_from_bottom',
         }}
       />
       <Stack.Screen 
@@ -62,11 +71,18 @@ function SearchStack() {
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
       <Stack.Screen 
+        name="EpisodePage" 
+        component={EpisodePage}
+        options={{
+          headerShown: false,
+        }}
+      />
+      <Stack.Screen 
         name="VideoPlayer" 
         component={VideoPlayerScreen}
         options={{
           presentation: 'fullScreenModal',
-          animation: 'fade',
+          animation: 'slide_from_bottom',
         }}
       />
       <Stack.Screen 
@@ -88,11 +104,18 @@ function MangaStack() {
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
       <Stack.Screen 
+        name="EpisodePage" 
+        component={EpisodePage}
+        options={{
+          headerShown: false,
+        }}
+      />
+      <Stack.Screen 
         name="VideoPlayer" 
         component={VideoPlayerScreen}
         options={{
           presentation: 'fullScreenModal',
-          animation: 'fade',
+          animation: 'slide_from_bottom',
         }}
       />
       <Stack.Screen 
@@ -115,11 +138,18 @@ function DownloadsStack() {
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
       <Stack.Screen 
+        name="EpisodePage" 
+        component={EpisodePage}
+        options={{
+          headerShown: false,
+        }}
+      />
+      <Stack.Screen 
         name="VideoPlayer" 
         component={VideoPlayerScreen}
         options={{
           presentation: 'fullScreenModal',
-          animation: 'fade',
+          animation: 'slide_from_bottom',
         }}
       />
       <Stack.Screen 
@@ -146,11 +176,18 @@ function ProfileStack() {
       <Stack.Screen name="MovieDetails" component={MovieDetailsScreen} />
       <Stack.Screen name="MangaDetails" component={MangaDetailsScreen} />
       <Stack.Screen 
+        name="EpisodePage" 
+        component={EpisodePage}
+        options={{
+          headerShown: false,
+        }}
+      />
+      <Stack.Screen 
         name="VideoPlayer" 
         component={VideoPlayerScreen}
         options={{
           presentation: 'fullScreenModal',
-          animation: 'fade',
+          animation: 'slide_from_bottom',
         }}
       />
       <Stack.Screen 
@@ -203,8 +240,9 @@ export default function App() {
 
   return (
     <SafeAreaProvider onLayout={onLayoutRootView}>
-      <NavigationContainer>
-        <StatusBar style="light" />
+      <VideoPlayerProvider>
+        <NavigationContainer>
+          <StatusBar style="light" />
         <Tab.Navigator
           screenOptions={{
             headerShown: false,
@@ -303,6 +341,7 @@ export default function App() {
         />
         </Tab.Navigator>
       </NavigationContainer>
+      </VideoPlayerProvider>
     </SafeAreaProvider>
   );
 }

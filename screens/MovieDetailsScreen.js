@@ -85,6 +85,8 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const [isPlotExpanded, setIsPlotExpanded] = useState(false); // Track if plot is expanded
   const [dominantColor, setDominantColor] = useState('#000000'); // Dominant color from backdrop
   const [darkenedColor, setDarkenedColor] = useState('#000000'); // Darkened version of dominant color
+  const [collection, setCollection] = useState(null); // Store collection data
+  const [loadingCollection, setLoadingCollection] = useState(false);
   const scrollY = useRef(new Animated.Value(0)).current;
 
   // Function to darken a color
@@ -330,6 +332,10 @@ export default function MovieDetailsScreen({ route, navigation }) {
         // If cached details don't have release_dates, fetch them separately
         if (cachedDetails.release_dates && cachedDetails.release_dates.results) {
           setMovieDetails(cachedDetails);
+          // Fetch collection if movie belongs to one
+          if (cachedDetails.belongs_to_collection) {
+            fetchCollection(cachedDetails.belongs_to_collection.id);
+          }
           return;
         } else {
           // Use cached details but fetch release dates
@@ -343,11 +349,19 @@ export default function MovieDetailsScreen({ route, navigation }) {
               await CacheService.cacheMediaDetails(item.id, 'movie', cachedDetails);
             }
             setMovieDetails(cachedDetails);
+            // Fetch collection if movie belongs to one
+            if (cachedDetails.belongs_to_collection) {
+              fetchCollection(cachedDetails.belongs_to_collection.id);
+            }
             return;
           } catch (error) {
             console.error('Error fetching release dates:', error);
             // Still use cached details without release dates
             setMovieDetails(cachedDetails);
+            // Fetch collection if movie belongs to one
+            if (cachedDetails.belongs_to_collection) {
+              fetchCollection(cachedDetails.belongs_to_collection.id);
+            }
             return;
           }
         }
@@ -370,6 +384,11 @@ export default function MovieDetailsScreen({ route, navigation }) {
         setMovieDetails(details);
         // Cache the details
         await CacheService.cacheMediaDetails(item.id, 'movie', details);
+        
+        // Fetch collection if movie belongs to one
+        if (details.belongs_to_collection) {
+          fetchCollection(details.belongs_to_collection.id);
+        }
       }
     } catch (error) {
       console.error('Error fetching movie details:', error);
@@ -377,6 +396,25 @@ export default function MovieDetailsScreen({ route, navigation }) {
       if (item.runtime || item.tagline) {
         setMovieDetails(item);
       }
+    }
+  };
+
+  const fetchCollection = async (collectionId) => {
+    if (!collectionId) return;
+    
+    setLoadingCollection(true);
+    try {
+      const response = await fetch(
+        `https://api.themoviedb.org/3/collection/${collectionId}?api_key=738b4edd0a156cc126dc4a4b8aea4aca`
+      );
+      const collectionData = await response.json();
+      if (collectionData && collectionData.parts) {
+        setCollection(collectionData);
+      }
+    } catch (error) {
+      console.error('Error fetching collection:', error);
+    } finally {
+      setLoadingCollection(false);
     }
   };
 
@@ -445,9 +483,14 @@ export default function MovieDetailsScreen({ route, navigation }) {
         console.error('Error loading episode progress:', error);
       }
       
-      // Check if external player is selected
-      const externalPlayer = await StorageService.getExternalPlayer();
-      await playVideo(item, episode, selectedSeason, episode.episode_number, resumePosition, externalPlayer);
+      // Navigate to EpisodePage instead of directly to VideoPlayer
+      navigation.navigate('EpisodePage', {
+        item,
+        episode,
+        season: selectedSeason,
+        episodeNumber: episode.episode_number,
+        resumePosition,
+      });
     }
   };
 
@@ -1038,9 +1081,9 @@ export default function MovieDetailsScreen({ route, navigation }) {
           
           // If failed to open external player, fall back to default player
           if (!opened) {
-            // Fall back to default player
+            // Fall back to EpisodePage
             if (episode) {
-              navigation.navigate('VideoPlayer', {
+              navigation.navigate('EpisodePage', {
                 item,
                 episode,
                 season,
@@ -1048,17 +1091,20 @@ export default function MovieDetailsScreen({ route, navigation }) {
                 resumePosition,
               });
             } else {
-              navigation.navigate('VideoPlayer', {
+              navigation.navigate('EpisodePage', {
                 item,
+                episode: null,
+                season: null,
+                episodeNumber: null,
                 resumePosition,
               });
             }
           }
         } else {
           Alert.alert('Error', 'Failed to fetch stream URL. Using default player.');
-          // Fall back to default player
+          // Fall back to EpisodePage
           if (episode) {
-            navigation.navigate('VideoPlayer', {
+            navigation.navigate('EpisodePage', {
               item,
               episode,
               season,
@@ -1066,8 +1112,11 @@ export default function MovieDetailsScreen({ route, navigation }) {
               resumePosition,
             });
           } else {
-            navigation.navigate('VideoPlayer', {
+            navigation.navigate('EpisodePage', {
               item,
+              episode: null,
+              season: null,
+              episodeNumber: null,
               resumePosition,
             });
           }
@@ -1075,9 +1124,9 @@ export default function MovieDetailsScreen({ route, navigation }) {
       } catch (error) {
         console.error('Error fetching stream for external player:', error);
         Alert.alert('Error', 'Failed to open external player. Using default player.');
-        // Fall back to default player
+        // Fall back to EpisodePage
         if (episode) {
-          navigation.navigate('VideoPlayer', {
+          navigation.navigate('EpisodePage', {
             item,
             episode,
             season,
@@ -1085,16 +1134,19 @@ export default function MovieDetailsScreen({ route, navigation }) {
             resumePosition,
           });
         } else {
-          navigation.navigate('VideoPlayer', {
+          navigation.navigate('EpisodePage', {
             item,
+            episode: null,
+            season: null,
+            episodeNumber: null,
             resumePosition,
           });
         }
       }
     } else {
-      // Use default player
+      // Use default player - navigate to EpisodePage for both movies and TV shows
       if (episode) {
-        navigation.navigate('VideoPlayer', {
+        navigation.navigate('EpisodePage', {
           item,
           episode,
           season,
@@ -1102,8 +1154,12 @@ export default function MovieDetailsScreen({ route, navigation }) {
           resumePosition,
         });
       } else {
-        navigation.navigate('VideoPlayer', {
+        // For movies, navigate to EpisodePage (it will handle movies)
+        navigation.navigate('EpisodePage', {
           item,
+          episode: null,
+          season: null,
+          episodeNumber: null,
           resumePosition,
         });
       }
@@ -1265,6 +1321,7 @@ export default function MovieDetailsScreen({ route, navigation }) {
         bounces={true}
         style={styles.scrollView}
         contentContainerStyle={[styles.scrollContent, { backgroundColor: darkenedColor }]}
+        contentInsetAdjustmentBehavior="never"
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
           { useNativeDriver: false }
@@ -1273,27 +1330,42 @@ export default function MovieDetailsScreen({ route, navigation }) {
       >
         {/* Backdrop and Title Section */}
         <View style={styles.heroSection}>
-          <Animated.View
-            style={[
-              styles.backdropContainer,
-              {
-                transform: [
-                  { translateY: Animated.add(headerTranslateY, headerScaleCompensation) },
-                  { scale: headerScale },
-                ],
-              },
-            ]}
+          <View
+            style={styles.backdropContainer}
           >
             {backdropUrl || posterUrl ? (
-              <CachedImage
-                source={{ uri: backdropUrl || posterUrl }}
-                style={styles.backdrop}
-                resizeMode="cover"
-              />
+              <Animated.View
+                style={[
+                  styles.backdrop,
+                  {
+                    transform: [
+                      { translateY: Animated.add(headerTranslateY, headerScaleCompensation) },
+                      { scale: headerScale },
+                    ],
+                  },
+                ]}
+              >
+                <CachedImage
+                  source={{ uri: backdropUrl || posterUrl }}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="cover"
+                />
+              </Animated.View>
             ) : (
-              <View style={[styles.backdrop, styles.placeholder]} />
+              <Animated.View 
+                style={[
+                  styles.backdrop, 
+                  styles.placeholder,
+                  {
+                    transform: [
+                      { translateY: Animated.add(headerTranslateY, headerScaleCompensation) },
+                      { scale: headerScale },
+                    ],
+                  },
+                ]} 
+              />
             )}
-          </Animated.View>
+          </View>
           
           {/* Gradient fade to darkened color at bottom */}
           <LinearGradient
@@ -1666,6 +1738,56 @@ export default function MovieDetailsScreen({ route, navigation }) {
             </View>
           )}
 
+          {/* Collections Section - Only show for movies with collections */}
+          {item.title && collection && collection.parts && collection.parts.length > 0 && (
+            <View style={styles.collectionSection}>
+              <Text style={styles.collectionTitle}>Collections</Text>
+              {loadingCollection ? (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator size="small" color="#fff" />
+                </View>
+              ) : (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.collectionSlider}
+                  contentContainerStyle={styles.collectionSliderContent}
+                >
+                  {collection.parts.map((movie, index) => (
+                    <TouchableOpacity
+                      key={movie.id}
+                      style={[
+                        styles.collectionCard,
+                        index > 0 && { marginLeft: 12 },
+                      ]}
+                      onPress={() => navigation.navigate('MovieDetails', { item: { ...movie, media_type: 'movie' } })}
+                      activeOpacity={0.8}
+                    >
+                      {movie.poster_path ? (
+                        <CachedImage
+                          source={{ uri: TMDBService.getPosterURL(movie.poster_path, 'w342') }}
+                          style={styles.collectionPoster}
+                        />
+                      ) : (
+                        <View style={[styles.collectionPoster, styles.collectionPlaceholder]}>
+                          <Ionicons name="film-outline" size={32} color="#666" />
+                        </View>
+                      )}
+                      <Text style={styles.collectionCardTitle} numberOfLines={2}>
+                        {movie.title}
+                      </Text>
+                      {movie.release_date && (
+                        <Text style={styles.collectionCardYear}>
+                          {new Date(movie.release_date).getFullYear()}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+          )}
+
           {/* Cast Section */}
           <View style={styles.castSection}>
             <Text style={styles.castTitle}>Cast</Text>
@@ -1752,12 +1874,17 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     backgroundColor: '#000', // Will be overridden dynamically
+    // Ensure scroll content doesn't stretch on pull
+    flexGrow: 1,
   },
   heroSection: {
     width: SCREEN_WIDTH,
     height: FEATURED_HEIGHT,
     position: 'relative',
     overflow: 'hidden',
+    // Ensure this container doesn't stretch - it's static with fixed dimensions
+    flexShrink: 0,
+    flexGrow: 0,
   },
   backdropContainer: {
     width: SCREEN_WIDTH * 1.33,
@@ -1781,6 +1908,8 @@ const styles = StyleSheet.create({
     height: FEATURED_HEIGHT,
     zIndex: 1,
     width: SCREEN_WIDTH,
+    // Ensure gradient doesn't stretch - it's static
+    flexShrink: 0,
   },
   titleContainer: {
     position: 'absolute',
@@ -1789,6 +1918,8 @@ const styles = StyleSheet.create({
     right: 20,
     alignItems: 'center',
     zIndex: 2,
+    // Ensure title container doesn't stretch - it's static
+    flexShrink: 0,
   },
   title: {
     fontSize: 48,
@@ -2094,6 +2225,47 @@ const styles = StyleSheet.create({
   emptyText: {
     color: 'rgba(255, 255, 255, 0.6)',
     fontSize: 14,
+  },
+  collectionSection: {
+    marginTop: 32,
+  },
+  collectionTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 16,
+  },
+  collectionSlider: {
+    marginTop: 0,
+  },
+  collectionSliderContent: {
+    paddingRight: 16,
+  },
+  collectionCard: {
+    width: 120,
+  },
+  collectionPoster: {
+    width: 120,
+    height: 180,
+    borderRadius: 8,
+    backgroundColor: '#1a1a1a',
+  },
+  collectionPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  collectionCardTitle: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  collectionCardYear: {
+    color: '#999',
+    fontSize: 12,
+    marginTop: 4,
+    textAlign: 'center',
   },
   castSection: {
     marginTop: 32,

@@ -16,7 +16,10 @@ import { StorageService } from '../services/StorageService';
 import { openInExternalPlayer } from '../services/ExternalPlayerService';
 import { VixsrcService } from '../services/VixsrcService';
 import { N3tflixService } from '../services/N3tflixService';
-import { Alert } from 'react-native';
+import { Alert, Dimensions } from 'react-native';
+
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+const FEATURED_HEIGHT = SCREEN_HEIGHT * 0.6;
 
 export default function HomeScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -201,22 +204,33 @@ export default function HomeScreen({ navigation }) {
 
   const handleContinueWatchingPress = async (item, progress) => {
     try {
-      const externalPlayer = await StorageService.getExternalPlayer();
-      
       if (progress.season !== null && progress.episodeNumber !== null) {
         // TV show episode - need to fetch episode data
         try {
           const episodes = await TMDBService.fetchTVEpisodes(item.id, progress.season);
           const episode = episodes.find(ep => ep.episode_number === progress.episodeNumber);
           if (episode) {
-            await playVideo(item, episode, progress.season, progress.episodeNumber, progress.position, externalPlayer);
+            // Navigate to EpisodePage instead of directly playing
+            navigation.navigate('EpisodePage', {
+              item,
+              episode,
+              season: progress.season,
+              episodeNumber: progress.episodeNumber,
+              resumePosition: progress.position,
+            });
           }
         } catch (error) {
           console.error('Error fetching episode:', error);
         }
       } else {
-        // Movie
-        await playVideo(item, null, null, null, progress.position, externalPlayer);
+        // Movie - navigate to EpisodePage
+        navigation.navigate('EpisodePage', {
+          item,
+          episode: null,
+          season: null,
+          episodeNumber: null,
+          resumePosition: progress.position,
+        });
       }
     } catch (error) {
       console.error('Error in handleContinueWatchingPress:', error);
@@ -380,6 +394,7 @@ export default function HomeScreen({ navigation }) {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         bounces={true}
+        contentInsetAdjustmentBehavior="never"
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
           { useNativeDriver: false }
@@ -387,7 +402,13 @@ export default function HomeScreen({ navigation }) {
         scrollEventThrottle={16}
       >
         {/* Featured Content - Extends to top edge */}
-        <View style={{ marginTop: -insets.top }}>
+        <View style={{ 
+          marginTop: -insets.top, 
+          height: FEATURED_HEIGHT + insets.top, 
+          flexShrink: 0,
+          flexGrow: 0,
+          overflow: 'hidden',
+        }}>
           {loadingFeatured || featuredItems.length === 0 ? (
             <FeaturedContentSkeleton />
           ) : (
@@ -480,6 +501,8 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 20,
+    // Ensure scroll content doesn't stretch on pull
+    flexGrow: 1,
   },
   header: {
     paddingHorizontal: 20,

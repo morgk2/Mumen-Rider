@@ -17,8 +17,9 @@ import {
   TextInput,
   Alert,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
-import { VideoView, useVideoPlayer } from 'expo-video';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { VideoView } from 'expo-video';
+import { useVideoPlayerContext } from '../contexts/VideoPlayerContext';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -42,77 +43,67 @@ const SUBTITLE_SETTINGS_KEY = '@subtitle_settings';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function VideoPlayerScreen({ route, navigation }) {
-  const { item, episode, season, episodeNumber, resumePosition } = route.params || {};
+  const { item: routeItem, episode: routeEpisode, season: routeSeason, episodeNumber: routeEpisodeNumber } = route.params || {};
   const insets = useSafeAreaInsets();
-  const [loading, setLoading] = useState(true);
+  
+  // Use shared player context
+  const {
+    player,
+    streamUrl,
+    isPlaying,
+    setIsPlaying,
+    position,
+    duration,
+    item: contextItem,
+    episode: contextEpisode,
+    positionRef,
+    play,
+    pause,
+    animateToFullscreen,
+    animateToMinimized,
+    transitionAnim,
+  } = useVideoPlayerContext();
+  
+  // Use route params or context values
+  const item = routeItem || contextItem;
+  const episode = routeEpisode || contextEpisode;
+  const season = routeSeason;
+  const episodeNumber = routeEpisodeNumber;
+  
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [streamUrl, setStreamUrl] = useState(null);
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [position, setPosition] = useState(resumePosition || 0);
-  const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(new Date());
   const progressSaveIntervalRef = useRef(null);
-  const hasSeekedToResumePosition = useRef(false);
   const hasAutoPlayed = useRef(false);
   const hasVideoFinished = useRef(false);
-  const positionRef = useRef(resumePosition || 0);
-  const durationRef = useRef(0);
   
-  // Create video player - initialize with null, will be set when streamUrl is available
-  const player = useVideoPlayer(null);
+  // Track actual player state for UI
+  const [uiIsPlaying, setUiIsPlaying] = useState(false);
+  const lastPlayerStateRef = useRef(false);
+  
+  // Poll player state directly for reliable UI updates
+  useEffect(() => {
+    if (!player) return;
+    
+    const interval = setInterval(() => {
+      if (player) {
+        // Use player.playing instead of player.paused (which might be undefined)
+        const actuallyPlaying = player.playing === true;
+        if (lastPlayerStateRef.current !== actuallyPlaying) {
+          setUiIsPlaying(actuallyPlaying);
+          lastPlayerStateRef.current = actuallyPlaying;
+        }
+      }
+    }, 200);
+    
+    return () => clearInterval(interval);
+  }, [player]);
+  const isFocused = useIsFocused(); // Track if this screen is focused
   
   // Track if replace is in progress to prevent race conditions
   const isReplacingRef = useRef(false);
   
-  // Update player source when streamUrl changes
-  useEffect(() => {
-    if (player && streamUrl) {
-      const replaceSource = async () => {
-        // Prevent multiple simultaneous replaces
-        if (isReplacingRef.current) {
-          console.log('Replace already in progress, skipping...');
-          return;
-        }
-        
-        try {
-          isReplacingRef.current = true;
-          
-          // Reset flags before replacing
-          hasAutoPlayed.current = false;
-          hasSeekedToResumePosition.current = false;
-          hasVideoFinished.current = false;
-          
-          // Set loading state while replacing
-          setLoading(true);
-          setError(null);
-          
-          // Use replaceAsync to avoid UI freezes on iOS
-          await player.replaceAsync({ uri: streamUrl });
-          
-          console.log('Video source replaced successfully');
-          
-          // Wait a bit for the player to start loading
-          await new Promise(resolve => setTimeout(resolve, 200));
-          
-          // Check if player is in error state
-          if (player.status === 'error') {
-            throw new Error('Player entered error state after replace');
-          }
-          
-          // Loading state will be managed by the progress update effect
-          // which hides loading when video reaches 1 second
-          isReplacingRef.current = false;
-        } catch (error) {
-          console.error('Error replacing video source:', error);
-          setError('Failed to load video source. Please try again.');
-          setLoading(false);
-          isReplacingRef.current = false;
-        }
-      };
-      
-      replaceSource();
-    }
-  }, [player, streamUrl]);
+  // Player source is managed in context, no need to replace here
   
   // Configure player properties when they change
   useEffect(() => {
@@ -134,17 +125,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
     }
   }, [player, playbackRate]);
   
-  // Seek to resume position when player is ready
-  useEffect(() => {
-    if (player && resumePosition && resumePosition > 0 && !hasSeekedToResumePosition.current && player.duration > 0) {
-      hasSeekedToResumePosition.current = true;
-      player.currentTime = resumePosition / 1000; // expo-video uses seconds
-      // If resuming to a position > 1 second, hide loading immediately
-      if (resumePosition >= 1000) {
-        setLoading(false);
-      }
-    }
-  }, [player, resumePosition, player?.duration]);
+  // Player is already initialized and synced in context, no need to seek here
   const [showControls, setShowControls] = useState(true);
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [isControlsLocked, setIsControlsLocked] = useState(false);
@@ -759,6 +740,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
   // Lock orientation when screen mounts or comes into focus
   useFocusEffect(
     React.useCallback(() => {
+      // Animate to fullscreen when this screen is focused
+      animateToFullscreen();
+      
       // Skip orientation locking on web as it's not well supported
       if (Platform.OS === 'web') {
         return;
@@ -844,9 +828,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
 
   useEffect(() => {
-    // expo-video handles audio mode automatically
-    fetchStreamUrl();
-
+    // Player is already initialized in context, no need to fetch
     // Auto-hide controls after 3 seconds
     startControlsTimer();
 
@@ -895,6 +877,14 @@ export default function VideoPlayerScreen({ route, navigation }) {
           return;
         }
         
+        // IMPORTANT: Check if video is currently paused - if so, don't autoplay
+        // This prevents autoplay when navigating from EpisodePage where video was paused
+        if (player.paused) {
+          console.log('Video is paused, respecting pause state - not autoplaying');
+          hasAutoPlayed.current = true; // Mark as handled so we don't try again
+          return;
+        }
+        
         // Try multiple times with increasing delays to ensure video starts
         const attempts = [400, 800, 1500, 2500, 4000];
         
@@ -907,12 +897,19 @@ export default function VideoPlayerScreen({ route, navigation }) {
             return;
           }
           
+          // Check again if paused (user might have paused during wait)
+          if (player.paused) {
+            console.log('Video was paused during autoplay wait, aborting');
+            hasAutoPlayed.current = true;
+            return;
+          }
+          
           if (player) {
             try {
               const currentStatus = player.status;
               
-              // Check if player is ready and not already playing
-              if (currentStatus === 'readyToPlay' && !player.playing) {
+              // Check if player is ready and not already playing and not paused
+              if (currentStatus === 'readyToPlay' && !player.playing && !player.paused) {
                 console.log(`Attempting to play video (${delay}ms delay, status: ${currentStatus})`);
                 player.volume = volume;
                 player.muted = isMuted;
@@ -925,8 +922,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
                   hasAutoPlayed.current = true;
                   console.log('Video auto-played successfully');
                   break; // Success, exit loop
-                } else if (player.status === 'readyToPlay') {
-                  // Try one more time if still ready
+                } else if (player.status === 'readyToPlay' && !player.paused) {
+                  // Try one more time if still ready and not paused
                   console.log('Retrying play...');
                   player.play();
                   await new Promise(resolve => setTimeout(resolve, 400));
@@ -1345,7 +1342,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   // Save watch progress
   const saveWatchProgress = async () => {
-    if (!item || !item.id || positionRef.current === 0 || durationRef.current === 0) return;
+    if (!item || !item.id || !position || !duration || position === 0 || duration === 0) return;
     
     try {
       const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
@@ -1353,8 +1350,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
         await WatchProgressService.saveProgress(
           item.id,
           mediaType,
-          positionRef.current,
-          durationRef.current,
+          position,
+          duration,
           season,
           episodeNumber
         );
@@ -1362,8 +1359,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
         await WatchProgressService.saveProgress(
           item.id,
           mediaType,
-          positionRef.current,
-          durationRef.current
+          position,
+          duration
         );
       }
     } catch (error) {
@@ -1695,52 +1692,39 @@ export default function VideoPlayerScreen({ route, navigation }) {
         // Check if player is loaded and has valid properties
         // expo-video player.status can be 'idle', 'loading', 'readyToPlay', or 'error'
         if (player.status === 'readyToPlay' || player.playing) {
+          // Progress is tracked in context, just update loading state
           const currentTimeSeconds = player.currentTime || 0;
-          const durationSeconds = player.duration || 0;
-          const newPosition = currentTimeSeconds * 1000; // Convert to milliseconds
-          const newDuration = durationSeconds * 1000; // Convert to milliseconds
-          
-          if (newDuration > 0) {
-      positionRef.current = newPosition;
-      durationRef.current = newDuration;
-      setPosition(newPosition);
-      setDuration(newDuration);
-            setIsPlaying(player.playing || false);
+          if (loading && currentTimeSeconds >= 1) {
+            setLoading(false);
+          }
 
-      // Hide loading screen only when video has reached at least 1 second (00:00:01)
-      // This ensures the video has actually started playing before hiding the backdrop
-      if (loading && newPosition >= 1000) {
-        setLoading(false);
-      }
-
-      // Check if episode is in the last 4 minutes and show next episode button
-      if (episode && season !== null && episodeNumber !== null && newDuration > 0) {
-        const timeRemaining = newDuration - newPosition;
-        const fourMinutesInMs = 4 * 60 * 1000; // 4 minutes in milliseconds
-        if (timeRemaining <= fourMinutesInMs && nextEpisode) {
-          setShowNextEpisodeButton(true);
-        } else {
-          setShowNextEpisodeButton(false);
-        }
-      }
-            
-            // Check if video finished (only check once)
-            if (newDuration > 0 && newPosition >= newDuration - 100 && !hasVideoFinished.current) {
-              // Video finished (within 100ms of end) - use flag to prevent multiple triggers
-              hasVideoFinished.current = true;
-              setTimeout(async () => {
-      // Remove progress when video finishes
-      if (item && item.id) {
-        const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
-        if (episode && season !== null && episodeNumber !== null) {
-          await WatchProgressService.removeProgress(item.id, mediaType, season, episodeNumber);
-        } else {
-          await WatchProgressService.removeProgress(item.id, mediaType);
-        }
-      }
-      navigation.goBack();
-              }, 500);
+          // Check if episode is in the last 4 minutes and show next episode button
+          if (episode && season !== null && episodeNumber !== null && duration > 0) {
+            const timeRemaining = duration - position;
+            const fourMinutesInMs = 4 * 60 * 1000; // 4 minutes in milliseconds
+            if (timeRemaining <= fourMinutesInMs && nextEpisode) {
+              setShowNextEpisodeButton(true);
+            } else {
+              setShowNextEpisodeButton(false);
             }
+          }
+            
+          // Check if video finished (only check once)
+          if (duration > 0 && position >= duration - 100 && !hasVideoFinished.current) {
+            // Video finished (within 100ms of end) - use flag to prevent multiple triggers
+            hasVideoFinished.current = true;
+            setTimeout(async () => {
+              // Remove progress when video finishes
+              if (item && item.id) {
+                const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+                if (episode && season !== null && episodeNumber !== null) {
+                  await WatchProgressService.removeProgress(item.id, mediaType, season, episodeNumber);
+                } else {
+                  await WatchProgressService.removeProgress(item.id, mediaType);
+                }
+              }
+              navigation.goBack();
+            }, 500);
           }
         }
       } catch (error) {
@@ -1753,16 +1737,79 @@ export default function VideoPlayerScreen({ route, navigation }) {
   }, [player, loading, episode, season, episodeNumber, nextEpisode, streamUrl, item, navigation]);
 
   const togglePlayPause = async () => {
-    resetControlsTimer();
-    if (player) {
-      if (isPlaying) {
+    if (!player) return;
+    
+    try {
+      // Get current state - use player.playing instead of player.paused
+      // player.paused might be undefined, but player.playing is reliable
+      const currentlyPlaying = player.playing === true;
+      
+      // Toggle play/pause
+      if (currentlyPlaying) {
         player.pause();
+        setUiIsPlaying(false);
       } else {
         // Ensure volume and mute state are set before playing
         player.volume = volume;
         player.muted = isMuted;
-        player.play();
+        
+        // Force play - clear any blocking states
+        try {
+          // Call play and wait for it
+          const playPromise = player.play();
+          
+          if (playPromise !== undefined) {
+            await playPromise;
+          }
+          
+          // Give it a moment to start
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          // Check if it actually started playing
+          if (player.playing === true) {
+            setUiIsPlaying(true);
+          } else {
+            // Retry
+            setTimeout(async () => {
+              try {
+                if (player) {
+                  player.volume = volume;
+                  player.muted = isMuted;
+                  await player.play();
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                  setUiIsPlaying(player.playing === true);
+                }
+              } catch (retryError) {
+                setUiIsPlaying(player.playing === true);
+              }
+            }, 300);
+          }
+        } catch (playError) {
+          // Try one more time with a delay
+          setTimeout(async () => {
+            try {
+              if (player) {
+                player.volume = volume;
+                player.muted = isMuted;
+                await player.play();
+                await new Promise(resolve => setTimeout(resolve, 100));
+                setUiIsPlaying(player.playing === true);
+              }
+            } catch (retryError) {
+              setUiIsPlaying(player.playing === true);
+            }
+          }, 300);
+        }
       }
+      
+      resetControlsTimer();
+    } catch (error) {
+      // Update UI based on actual state
+      setTimeout(() => {
+        if (player) {
+          setUiIsPlaying(player.playing === true);
+        }
+      }, 200);
     }
   };
 
@@ -1795,8 +1842,10 @@ export default function VideoPlayerScreen({ route, navigation }) {
       
       // Update animated value immediately
       sliderProgress.setValue(progress);
-      setPosition(newPosition);
-      seekTo(newPosition);
+      // Use context seek function
+      if (player && player.duration > 0) {
+        player.currentTime = newPosition / 1000;
+      }
     }
   };
 
@@ -2260,6 +2309,33 @@ export default function VideoPlayerScreen({ route, navigation }) {
     }
 
     resetControlsTimer();
+    
+    // If in landscape mode, navigate back to EpisodePage (minimize)
+    if (isLandscape) {
+      // If we came from EpisodePage, just go back (it's still in the stack)
+      if (route.params?.fromEpisodePage) {
+        // Unlock orientation first
+        try {
+          await ScreenOrientation.unlockAsync();
+        } catch (error) {
+          // Ignore unlock error
+        }
+        
+        // Save progress before going back (progress is tracked in context)
+        await saveWatchProgress();
+        
+        // Animate to minimized before going back
+        animateToMinimized();
+        
+        // Small delay to let animation start, then navigate back
+        setTimeout(() => {
+          navigation.goBack();
+        }, 100);
+        return;
+      }
+    }
+    
+    // Otherwise, toggle orientation normally
     const newIsLandscape = !isLandscape;
     
     try {
@@ -2727,14 +2803,35 @@ export default function VideoPlayerScreen({ route, navigation }) {
               },
             ]}
           >
-            {player && streamUrl && (
-              <VideoView
-                player={player}
-              style={styles.video}
-                contentFit="contain"
-                nativeControls={false}
-                allowsFullscreen={false}
-                allowsPictureInPicture={true}
+            {player && streamUrl && isFocused && (
+              <Animated.View
+                style={[
+                  StyleSheet.absoluteFill,
+                  {
+                    opacity: transitionAnim.interpolate({
+                      inputRange: [0, 0.3, 1],
+                      outputRange: [0, 0.9, 1],
+                      extrapolate: 'clamp',
+                    }),
+                    transform: [
+                      {
+                        scale: transitionAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0.9, 1],
+                          extrapolate: 'clamp',
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              >
+                <VideoView
+                  player={player}
+                  style={styles.video}
+                  contentFit="contain"
+                  nativeControls={false}
+                  allowsFullscreen={false}
+                  allowsPictureInPicture={true}
                 onLoadStart={() => {
                 // Ensure audio is enabled when video loads
                   if (player) {
@@ -2759,22 +2856,18 @@ export default function VideoPlayerScreen({ route, navigation }) {
                   if (event.currentTime !== undefined && event.duration !== undefined) {
                     const newPosition = event.currentTime * 1000; // Convert to milliseconds
                     const newDuration = event.duration * 1000; // Convert to milliseconds
-                    positionRef.current = newPosition;
-                    durationRef.current = newDuration;
-                    setPosition(newPosition);
-                    setDuration(newDuration);
-                    
-                    // Hide loading when video starts playing
+                    // Progress is tracked in context, just update loading state
                     if (loading && newPosition >= 1000) {
                       setLoading(false);
-                  }
+                    }
                 }
               }}
               onError={(error) => {
                 console.error('Video error:', error);
                 setError('Video playback error');
               }}
-            />
+              />
+              </Animated.View>
             )}
           </Animated.View>
 
@@ -2968,7 +3061,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                   >
                     <BlurView intensity={80} tint="dark" style={styles.playPauseBlur}>
                       <Ionicons 
-                        name={isPlaying ? "pause" : "play"} 
+                        name={uiIsPlaying ? "pause" : "play"} 
                         size={56} 
                         color="#fff" 
                       />
@@ -3131,7 +3224,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                                 activeOpacity={0.7}
                               >
                                 <Ionicons 
-                                  name={isLandscape ? "phone-portrait" : "phone-landscape"} 
+                                  name={isLandscape ? "contract" : "expand"} 
                                   size={18} 
                                   color="#fff" 
                                 />

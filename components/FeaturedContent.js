@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Dimensions, Text, TouchableOpacity, Animated, Easing, Image } from 'react-native';
+import { View, StyleSheet, Dimensions, Text, TouchableOpacity, Animated, Easing, Image, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -56,6 +56,7 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
   }) : 0.75;
 
   // Compensate for scale to keep center anchor point
+  // When scaling from top-left, center moves down, so we translate up to compensate
   const containerHeight = FEATURED_HEIGHT + 150;
   const headerScaleCompensation = scrollY ? scrollY.interpolate({
     inputRange: [-300, 0],
@@ -458,30 +459,49 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
       {/* Previous Item - slides out to left */}
       {prevItem && (
         <>
-          <Animated.View
+          <View
             style={[
               styles.backdropContainer,
               styles.prevItemLayer,
-              {
-                transform: [
-                  { translateX: prevParallaxX },
-                  { translateY: Animated.add(Animated.add(headerTranslateY, headerScaleCompensation), prevParallaxY) },
-                  { scale: headerScale },
-                ],
-                opacity: prevBackdropOpacity,
-              },
             ]}
           >
             {TMDBService.getBackdropURL(prevItem.backdrop_path, 'original') ? (
-              <CachedImage
-                source={{ uri: TMDBService.getBackdropURL(prevItem.backdrop_path, 'original') }}
-                style={styles.backdrop}
-                resizeMode="cover"
-              />
+              <Animated.View
+                style={[
+                  styles.backdrop,
+                  {
+                    transform: [
+                      { translateX: prevParallaxX },
+                      { translateY: Animated.add(Animated.add(headerTranslateY, headerScaleCompensation), prevParallaxY) },
+                      { scale: headerScale },
+                    ],
+                    opacity: prevBackdropOpacity,
+                  },
+                ]}
+              >
+                <CachedImage
+                  source={{ uri: TMDBService.getBackdropURL(prevItem.backdrop_path, 'original') }}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="cover"
+                />
+              </Animated.View>
             ) : (
-              <View style={[styles.backdrop, styles.placeholder]} />
+              <Animated.View 
+                style={[
+                  styles.backdrop, 
+                  styles.placeholder,
+                  {
+                    transform: [
+                      { translateX: prevParallaxX },
+                      { translateY: Animated.add(Animated.add(headerTranslateY, headerScaleCompensation), prevParallaxY) },
+                      { scale: headerScale },
+                    ],
+                    opacity: prevBackdropOpacity,
+                  },
+                ]} 
+              />
             )}
-          </Animated.View>
+          </View>
 
           <Animated.View
             style={[
@@ -510,30 +530,49 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
       )}
 
       {/* Current Item - crossfades in */}
-      <Animated.View
+      <View
         style={[
           styles.backdropContainer,
           styles.currentItemLayer,
-          {
-            transform: [
-              { translateX: parallaxX },
-              { translateY: Animated.add(Animated.add(headerTranslateY, headerScaleCompensation), parallaxY) },
-              { scale: headerScale },
-            ],
-            opacity: totalItems > 1 ? backdropOpacity : 1,
-          },
         ]}
       >
         {backdropUrl ? (
-          <CachedImage
-            source={{ uri: backdropUrl }}
-            style={styles.backdrop}
-            resizeMode="cover"
-          />
+          <Animated.View
+            style={[
+              styles.backdrop,
+              {
+                transform: [
+                  { translateX: parallaxX },
+                  { translateY: Animated.add(Animated.add(headerTranslateY, headerScaleCompensation), parallaxY) },
+                  { scale: headerScale },
+                ],
+                opacity: totalItems > 1 ? backdropOpacity : 1,
+              },
+            ]}
+          >
+            <CachedImage
+              source={{ uri: backdropUrl }}
+              style={StyleSheet.absoluteFill}
+              resizeMode="cover"
+            />
+          </Animated.View>
         ) : (
-          <View style={[styles.backdrop, styles.placeholder]} />
+          <Animated.View 
+            style={[
+              styles.backdrop, 
+              styles.placeholder,
+              {
+                transform: [
+                  { translateX: parallaxX },
+                  { translateY: Animated.add(Animated.add(headerTranslateY, headerScaleCompensation), parallaxY) },
+                  { scale: headerScale },
+                ],
+                opacity: totalItems > 1 ? backdropOpacity : 1,
+              },
+            ]} 
+          />
         )}
-      </Animated.View>
+      </View>
       
       {/* Static Gradient fade to black at bottom - same for all movies */}
       <View style={styles.gradient}>
@@ -599,6 +638,9 @@ const styles = StyleSheet.create({
     height: FEATURED_HEIGHT,
     position: 'relative',
     overflow: 'hidden', // Keep hidden to prevent backdrop from showing outside bounds
+    // Ensure container doesn't stretch - it's static with fixed dimensions
+    flexShrink: 0,
+    flexGrow: 0,
   },
   progressBarsContainer: {
     position: 'absolute',
@@ -645,11 +687,11 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   backdropContainer: {
-    width: SCREEN_WIDTH * 1.8, // Increased from 1.33 to 1.8 to show more image when moving
-    height: FEATURED_HEIGHT + 300, // Increased height to prevent vertical cropping
+    width: SCREEN_WIDTH * 1.33,
+    height: FEATURED_HEIGHT + 150,
     position: 'absolute',
-    top: -150, // Adjusted to center the larger image
-    left: -SCREEN_WIDTH * 0.4, // Adjusted to center the larger image
+    top: -75,
+    left: -SCREEN_WIDTH * 0.165,
   },
   backdrop: {
     width: '100%',
@@ -666,6 +708,8 @@ const styles = StyleSheet.create({
     height: '100%',
     zIndex: 3,
     pointerEvents: 'none',
+    // Ensure gradient doesn't stretch - it's static
+    flexShrink: 0,
   },
   content: {
     position: 'absolute',
@@ -674,6 +718,8 @@ const styles = StyleSheet.create({
     right: 20,
     alignItems: 'center',
     zIndex: 10,
+    // Ensure content doesn't stretch - it's static
+    flexShrink: 0,
   },
   titleContainer: {
     alignItems: 'center',
