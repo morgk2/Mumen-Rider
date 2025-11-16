@@ -70,9 +70,10 @@ jobs:
           fi
           
           APK_NAME=$(basename "$APK_PATH")
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          # Store the full path relative to repository root
+          echo "apk_path=android/$APK_PATH" >> $GITHUB_OUTPUT
           echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
-          echo "Found APK: $APK_NAME at $APK_PATH"
+          echo "Found APK: $APK_NAME at android/$APK_PATH"
           ls -lh "$APK_PATH"
 
       - name: Copy APK to build directory

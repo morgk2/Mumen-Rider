@@ -11,6 +11,8 @@ import {
   Modal,
   Alert,
   Image,
+  Animated,
+  Easing,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -39,6 +41,17 @@ export default function SearchScreen({ navigation }) {
   const [selectedGenre, setSelectedGenre] = useState(null);
   const [suggesting, setSuggesting] = useState(false);
   const [suggestedItem, setSuggestedItem] = useState(null);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+
+  // Animation values
+  const searchBarScale = useRef(new Animated.Value(1)).current;
+  const searchBarOpacity = useRef(new Animated.Value(1)).current;
+  const tabIndicatorPosition = useRef(new Animated.Value(activeTab === 'movies' ? 0 : 1)).current;
+  const contentOpacity = useRef(new Animated.Value(1)).current;
+  const suggestSectionOpacity = useRef(new Animated.Value(0)).current;
+  const suggestSectionScale = useRef(new Animated.Value(0.95)).current;
+  const resultsOpacity = useRef(new Animated.Value(0)).current;
+  const resultsTranslateY = useRef(new Animated.Value(20)).current;
 
   // Movie genres with TMDB genre IDs
   const movieGenres = [
@@ -66,9 +79,33 @@ export default function SearchScreen({ navigation }) {
   useEffect(() => {
     fetchTrendingMovies();
     fetchTrendingManga();
+    
+    // Animate suggest section on mount
+    Animated.parallel([
+      Animated.timing(suggestSectionOpacity, {
+        toValue: 1,
+        duration: 800,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.spring(suggestSectionScale, {
+        toValue: 1,
+        tension: 50,
+        friction: 7,
+        useNativeDriver: true,
+      }),
+    ]).start();
   }, []);
 
   useEffect(() => {
+    // Animate tab indicator
+    Animated.spring(tabIndicatorPosition, {
+      toValue: activeTab === 'movies' ? 0 : 1,
+      tension: 100,
+      friction: 8,
+      useNativeDriver: true,
+    }).start();
+
     // Reset search when tab changes
     setSearchQuery('');
     setSearchResults([]);
@@ -87,6 +124,19 @@ export default function SearchScreen({ navigation }) {
       setSearching(false);
       setCurrentPage(1);
       setTotalPages(1);
+      // Animate out results
+      Animated.parallel([
+        Animated.timing(resultsOpacity, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(resultsTranslateY, {
+          toValue: 20,
+          duration: 200,
+          useNativeDriver: true,
+        }),
+      ]).start();
       return;
     }
 
@@ -102,6 +152,26 @@ export default function SearchScreen({ navigation }) {
       }
     };
   }, [searchQuery, activeTab]);
+
+  // Animate search results when they change
+  useEffect(() => {
+    if (searchResults.length > 0 && !searching) {
+      Animated.parallel([
+        Animated.timing(resultsOpacity, {
+          toValue: 1,
+          duration: 400,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(resultsTranslateY, {
+          toValue: 0,
+          duration: 400,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [searchResults, searching]);
 
   const fetchTrendingMovies = async () => {
     setLoading(prev => ({ ...prev, movies: true }));
@@ -147,6 +217,35 @@ export default function SearchScreen({ navigation }) {
     setSearchQuery('');
     setSearchResults([]);
     setSearching(false);
+  };
+
+  const handleSearchFocus = () => {
+    setIsSearchFocused(true);
+    Animated.parallel([
+      Animated.spring(searchBarScale, {
+        toValue: 1.02,
+        tension: 200,
+        friction: 3,
+        useNativeDriver: true,
+      }),
+      Animated.timing(searchBarOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  const handleSearchBlur = () => {
+    setIsSearchFocused(false);
+    Animated.parallel([
+      Animated.spring(searchBarScale, {
+        toValue: 1,
+        tension: 200,
+        friction: 3,
+        useNativeDriver: true,
+      }),
+    ]).start();
   };
 
   const performSearch = async (query, page = 1) => {
@@ -260,14 +359,30 @@ export default function SearchScreen({ navigation }) {
     }
   };
 
+  // Calculate tab indicator position (accounting for padding)
+  const tabContainerPadding = 4;
+  const tabWidth = (SCREEN_WIDTH - 32 - tabContainerPadding * 2) / 2; // 32 is horizontal padding
+  const tabIndicatorTranslateX = tabIndicatorPosition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, tabWidth],
+  });
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Search Bar */}
       <View style={styles.searchContainer}>
         {/* Tab Switcher */}
         <View style={styles.tabContainer}>
+          <Animated.View
+            style={[
+              styles.tabIndicator,
+              {
+                transform: [{ translateX: tabIndicatorTranslateX }],
+              },
+            ]}
+          />
           <TouchableOpacity
-            style={[styles.tab, activeTab === 'movies' && styles.tabActive]}
+            style={styles.tab}
             onPress={() => setActiveTab('movies')}
             activeOpacity={0.7}
           >
@@ -282,7 +397,7 @@ export default function SearchScreen({ navigation }) {
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.tab, activeTab === 'manga' && styles.tabActive]}
+            style={styles.tab}
             onPress={() => setActiveTab('manga')}
             activeOpacity={0.7}
           >
@@ -298,23 +413,42 @@ export default function SearchScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={20} color="rgba(255, 255, 255, 0.6)" style={styles.searchIcon} />
+        <Animated.View
+          style={[
+            styles.searchBar,
+            {
+              transform: [{ scale: searchBarScale }],
+              opacity: searchBarOpacity,
+              borderColor: isSearchFocused
+                ? 'rgba(255, 255, 255, 0.8)'
+                : 'rgba(255, 255, 255, 0.2)',
+            },
+          ]}
+        >
+          <Ionicons 
+            name="search" 
+            size={20} 
+            color={isSearchFocused ? 'rgba(255, 255, 255, 0.9)' : 'rgba(255, 255, 255, 0.5)'} 
+            style={styles.searchIcon} 
+          />
           <TextInput
             style={styles.searchInput}
             placeholder={activeTab === 'manga' ? "Search manga..." : "Search movies, TV shows..."}
             placeholderTextColor="rgba(255, 255, 255, 0.4)"
             value={searchQuery}
             onChangeText={setSearchQuery}
+            onFocus={handleSearchFocus}
+            onBlur={handleSearchBlur}
             autoCapitalize="none"
             autoCorrect={false}
+            keyboardAppearance="dark"
           />
           {searchQuery.length > 0 && (
             <TouchableOpacity onPress={clearSearch} style={styles.clearButton}>
               <Ionicons name="close-circle" size={20} color="rgba(255, 255, 255, 0.6)" />
             </TouchableOpacity>
           )}
-        </View>
+        </Animated.View>
       </View>
 
       {/* Content */}
@@ -337,128 +471,198 @@ export default function SearchScreen({ navigation }) {
       >
         {searchQuery.length === 0 ? (
           <>
-            {/* Suggest a Movie/Show Section - Apple Intelligence Style */}
+            {/* Suggest a Movie/Show Section - Netflix Style */}
             {activeTab === 'movies' && (
-              <View style={styles.suggestSection}>
-                <LinearGradient
-                  colors={['#5E5CE6', '#7D7AFF', '#AF52DE', '#FF2D55', '#FF9500']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  locations={[0, 0.3, 0.5, 0.7, 1]}
-                  style={styles.suggestGradient}
-                >
-                  <LinearGradient
-                    colors={['rgba(94, 92, 230, 0.95)', 'rgba(125, 122, 255, 0.92)', 'rgba(175, 82, 222, 0.95)', 'rgba(255, 45, 85, 0.92)', 'rgba(255, 149, 0, 0.9)']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    locations={[0, 0.3, 0.5, 0.7, 1]}
-                    style={styles.suggestInnerGradient}
-                  >
-                    {/* Animated glow effect layers */}
-                    <View style={styles.suggestGlowLayer1} />
-                    <View style={styles.suggestGlowLayer2} />
-                    
-                    <View style={styles.suggestContent}>
-                      <View style={styles.suggestIconContainer}>
-                        <LinearGradient
-                          colors={['rgba(255, 255, 255, 0.35)', 'rgba(255, 255, 255, 0.15)', 'rgba(255, 255, 255, 0.25)']}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
-                          style={styles.suggestIconGradient}
-                        >
-                          <Ionicons name="sparkles" size={40} color="#fff" />
-                        </LinearGradient>
+              <Animated.View
+                style={[
+                  styles.suggestSection,
+                  {
+                    opacity: suggestSectionOpacity,
+                    transform: [{ scale: suggestSectionScale }],
+                  },
+                ]}
+              >
+                <View style={styles.suggestContent}>
+                  <View style={styles.suggestIconContainer}>
+                    <Ionicons name="sparkles" size={32} color="#fff" />
+                  </View>
+                  <View style={styles.suggestTextContainer}>
+                    <Text style={styles.suggestTitle}>Suggest a Movie/Show</Text>
+                    <TouchableOpacity
+                      style={styles.suggestButton}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        setShowSuggestionModal(true);
+                      }}
+                    >
+                      <View style={styles.suggestButtonGradient}>
+                        <Ionicons name="arrow-forward" size={16} color="#000" style={styles.suggestButtonIcon} />
+                        <Text style={styles.suggestButtonText}>Suggest</Text>
                       </View>
-                      <View style={styles.suggestTextContainer}>
-                        <Text style={styles.suggestTitle}>Suggest a Movie/Show</Text>
-                        <TouchableOpacity
-                          style={styles.suggestButton}
-                          activeOpacity={0.8}
-                        onPress={() => {
-                          setShowSuggestionModal(true);
-                        }}
-                        >
-                          <LinearGradient
-                            colors={['rgba(255, 255, 255, 0.3)', 'rgba(255, 255, 255, 0.2)', 'rgba(255, 255, 255, 0.15)']}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 1 }}
-                            style={styles.suggestButtonGradient}
-                          >
-                            <Ionicons name="arrow-forward" size={16} color="#fff" style={styles.suggestButtonIcon} />
-                            <Text style={styles.suggestButtonText}>Suggest</Text>
-                          </LinearGradient>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  </LinearGradient>
-                </LinearGradient>
-              </View>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </Animated.View>
             )}
 
-            <Text style={styles.sectionTitle}>
-              {activeTab === 'manga' ? 'Trending Manga' : 'Trending Movies'}
-            </Text>
-            {loading[activeTab] ? (
-              <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#fff" />
-                <Text style={styles.loadingText}>
-                  {activeTab === 'manga' ? 'Loading trending manga...' : 'Loading trending movies...'}
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.list}>
-                {(activeTab === 'manga' ? trendingManga : trendingMovies).map((item) => (
-                  <SearchCard
-                    key={item.id}
-                    item={item}
-                    onPress={handleItemPress}
-                  />
-                ))}
-              </View>
-            )}
+            <Animated.View style={{ opacity: contentOpacity }}>
+              <Text style={styles.sectionTitle}>
+                {activeTab === 'manga' ? 'Trending Manga' : 'Trending Movies'}
+              </Text>
+              {loading[activeTab] ? (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator size="large" color="#fff" />
+                  <Text style={styles.loadingText}>
+                    {activeTab === 'manga' ? 'Loading trending manga...' : 'Loading trending movies...'}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.list}>
+                  {(activeTab === 'manga' ? trendingManga : trendingMovies).map((item, index) => (
+                    <Animated.View
+                      key={item.id}
+                      style={{
+                        opacity: contentOpacity,
+                        transform: [
+                          {
+                            translateY: contentOpacity.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [20, 0],
+                            }),
+                          },
+                        ],
+                      }}
+                    >
+                      <SearchCard
+                        item={item}
+                        onPress={handleItemPress}
+                      />
+                    </Animated.View>
+                  ))}
+                </View>
+              )}
+            </Animated.View>
           </>
         ) : (
           <>
-            <Text style={styles.sectionTitle}>
-              Search Results {searchResults.length > 0 && `(${searchResults.length})`}
-            </Text>
-            {searching ? (
-              <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#fff" />
-                <Text style={styles.loadingText}>Searching...</Text>
-              </View>
-            ) : searchResults.length > 0 ? (
-              <>
-                <View style={styles.grid}>
-                  {searchResults.map((item, index) => (
-                    <View
-                      key={`${item.id}-${index}`}
-                      style={styles.gridItem}
-                    >
-                      <View style={styles.gridItemWrapper}>
-                        <TrendingItem
-                          item={item}
-                          onPress={handleItemPress}
-                          variant="grid"
-                        />
-                      </View>
-                    </View>
-                  ))}
+            <Animated.View
+              style={{
+                opacity: resultsOpacity,
+                transform: [{ translateY: resultsTranslateY }],
+              }}
+            >
+              <Text style={styles.sectionTitle}>
+                Search Results {searchResults.length > 0 && `(${searchResults.length})`}
+              </Text>
+              {searching ? (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator size="large" color="#fff" />
+                  <Text style={styles.loadingText}>Searching...</Text>
                 </View>
-                {loadingMore && (
-                  <View style={styles.loadingMoreContainer}>
-                    <ActivityIndicator size="small" color="#fff" />
-                    <Text style={styles.loadingMoreText}>Loading more...</Text>
+              ) : searchResults.length > 0 ? (
+                <>
+                  <View style={styles.grid}>
+                    {searchResults.map((item, index) => {
+                      const isManga = item.title && typeof item.title === 'object';
+                      const backdropURL = isManga 
+                        ? AniListService.getCoverImage(item)
+                        : (TMDBService.getBackdropURL(item.backdrop_path) || TMDBService.getPosterURL(item.poster_path));
+                      const displayTitle = isManga 
+                        ? AniListService.getMangaTitle(item)
+                        : (item.title || item.name || 'Unknown');
+                      const year = isManga
+                        ? (item.startDate?.year?.toString() || '')
+                        : ((item.release_date || item.first_air_date || '').substring(0, 4));
+                      const rating = isManga ? item.averageScore : item.vote_average;
+                      
+                      return (
+                        <Animated.View
+                          key={`${item.id}-${index}`}
+                          style={[
+                            styles.gridItem,
+                            {
+                              opacity: resultsOpacity,
+                              transform: [
+                                {
+                                  translateY: resultsTranslateY,
+                                },
+                                {
+                                  scale: resultsOpacity.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: [0.9, 1],
+                                  }),
+                                },
+                              ],
+                            },
+                          ]}
+                        >
+                          <TouchableOpacity
+                            style={styles.backdropCard}
+                            onPress={() => handleItemPress(item)}
+                            activeOpacity={0.8}
+                          >
+                            {backdropURL ? (
+                              <Image
+                                source={{ uri: backdropURL }}
+                                style={styles.backdropImage}
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <View style={[styles.backdropImage, styles.backdropPlaceholder]}>
+                                <Ionicons name="image-outline" size={32} color="rgba(255, 255, 255, 0.3)" />
+                              </View>
+                            )}
+                            <LinearGradient
+                              colors={['transparent', 'rgba(0, 0, 0, 0.7)', 'rgba(0, 0, 0, 0.95)']}
+                              style={styles.backdropGradient}
+                            >
+                              <View style={styles.backdropInfo}>
+                                <Text style={styles.backdropTitle} numberOfLines={2}>
+                                  {displayTitle}
+                                </Text>
+                                <View style={styles.backdropMeta}>
+                                  {year ? (
+                                    <Text style={styles.backdropYear}>{year}</Text>
+                                  ) : null}
+                                  {rating > 0 && (
+                                    <View style={styles.backdropRating}>
+                                      <Ionicons name="star" size={12} color="#FFD700" />
+                                      <Text style={styles.backdropRatingText}>
+                                        {isManga ? (rating / 10).toFixed(1) : rating.toFixed(1)}
+                                      </Text>
+                                    </View>
+                                  )}
+                                </View>
+                              </View>
+                            </LinearGradient>
+                          </TouchableOpacity>
+                        </Animated.View>
+                      );
+                    })}
                   </View>
-                )}
-              </>
-            ) : (
-              <View style={styles.emptyContainer}>
-                <Ionicons name="search-outline" size={64} color="rgba(255, 255, 255, 0.3)" />
-                <Text style={styles.emptyText}>No results found</Text>
-                <Text style={styles.emptySubtext}>Try a different search term</Text>
-              </View>
-            )}
+                  {loadingMore && (
+                    <View style={styles.loadingMoreContainer}>
+                      <ActivityIndicator size="small" color="#fff" />
+                      <Text style={styles.loadingMoreText}>Loading more...</Text>
+                    </View>
+                  )}
+                </>
+              ) : (
+                <Animated.View
+                  style={[
+                    styles.emptyContainer,
+                    {
+                      opacity: resultsOpacity,
+                      transform: [{ translateY: resultsTranslateY }],
+                    },
+                  ]}
+                >
+                  <Ionicons name="search-outline" size={64} color="rgba(255, 255, 255, 0.3)" />
+                  <Text style={styles.emptyText}>No results found</Text>
+                  <Text style={styles.emptySubtext}>Try a different search term</Text>
+                </Animated.View>
+              )}
+            </Animated.View>
           </>
         )}
       </ScrollView>
@@ -546,18 +750,13 @@ export default function SearchScreen({ navigation }) {
                     activeOpacity={0.8}
                     disabled={suggesting}
                   >
-                    <LinearGradient
-                      colors={['#5E5CE6', '#7D7AFF', '#AF52DE']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.modalSuggestButtonGradient}
-                    >
+                    <View style={styles.modalSuggestButtonGradient}>
                       {suggesting ? (
-                        <ActivityIndicator size="small" color="#fff" />
+                        <ActivityIndicator size="small" color="#000" />
                       ) : (
                         <Text style={styles.modalSuggestButtonText}>Suggest</Text>
                       )}
-                    </LinearGradient>
+                    </View>
                   </TouchableOpacity>
                 </View>
               </>
@@ -634,15 +833,10 @@ export default function SearchScreen({ navigation }) {
                     }}
                     activeOpacity={0.8}
                   >
-                    <LinearGradient
-                      colors={['#5E5CE6', '#7D7AFF', '#AF52DE']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.suggestionActionButtonGradient}
-                    >
-                      <Ionicons name="information-circle" size={20} color="#fff" style={styles.suggestionActionIcon} />
+                    <View style={styles.suggestionActionButtonGradient}>
+                      <Ionicons name="information-circle" size={20} color="#000" style={styles.suggestionActionIcon} />
                       <Text style={styles.suggestionActionText}>Go to Details</Text>
-                    </LinearGradient>
+                    </View>
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -664,7 +858,7 @@ export default function SearchScreen({ navigation }) {
                       ) : (
                         <>
                           <Ionicons name="refresh" size={20} color="#fff" style={styles.suggestionActionIcon} />
-                          <Text style={styles.suggestionActionText}>Suggest Another</Text>
+                          <Text style={[styles.suggestionActionText, { color: '#fff' }]}>Suggest Another</Text>
                         </>
                       )}
                     </View>
@@ -679,7 +873,7 @@ export default function SearchScreen({ navigation }) {
                   >
                     <View style={styles.suggestionActionButtonTertiaryGradient}>
                       <Ionicons name="arrow-back" size={20} color="#fff" style={styles.suggestionActionIcon} />
-                      <Text style={styles.suggestionActionText}>Back</Text>
+                      <Text style={[styles.suggestionActionText, { color: '#fff' }]}>Back</Text>
                     </View>
                   </TouchableOpacity>
                 </View>
@@ -706,8 +900,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginBottom: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 10,
+    borderRadius: 12,
     padding: 4,
+    position: 'relative',
+  },
+  tabIndicator: {
+    position: 'absolute',
+    top: 4,
+    bottom: 4,
+    left: 4,
+    width: SCREEN_WIDTH / 2 - 20, // Half width minus padding
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 8,
   },
   tab: {
     flex: 1,
@@ -717,9 +921,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderRadius: 8,
+    zIndex: 1,
   },
   tabActive: {
-    backgroundColor: 'rgba(255, 59, 48, 0.8)',
+    // Removed - using indicator instead
   },
   tabIcon: {
     marginRight: 6,
@@ -735,12 +940,12 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255, 59, 48, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   searchIcon: {
     marginRight: 8,
@@ -763,110 +968,47 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   suggestSection: {
-    marginBottom: 15,
-    borderRadius: 15,
-    overflow: 'hidden',
-    shadowColor: '#AF52DE',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.5,
-    shadowRadius: 24,
-    elevation: 12,
-    height: 120,
-  },
-  suggestGradient: {
-    borderRadius: 15,
-    padding: 3,
-    height: '100%',
-    width: '100%',
-  },
-  suggestInnerGradient: {
-    borderRadius: 12,
-    padding: 0,
-    overflow: 'hidden',
-    position: 'relative',
-    height: '100%',
-  },
-  suggestGlowLayer1: {
-    position: 'absolute',
-    top: -30,
-    left: -30,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    opacity: 0.6,
-  },
-  suggestGlowLayer2: {
-    position: 'absolute',
-    bottom: -20,
-    right: -20,
-    width: 100,
+    marginBottom: 20,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
     height: 100,
-    borderRadius: 50,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    opacity: 0.5,
   },
   suggestContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    zIndex: 1,
-    position: 'relative',
     height: '100%',
-    padding: 12,
+    padding: 16,
   },
   suggestIconContainer: {
-    width: 96,
-    height: 96,
-    borderRadius: 12,
-    marginRight: 12,
-    overflow: 'hidden',
-    shadowColor: '#fff',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  suggestIconGradient: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 12,
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    marginRight: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   suggestTextContainer: {
     flex: 1,
     justifyContent: 'center',
   },
   suggestTitle: {
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     color: '#fff',
-    marginBottom: 6,
-    textAlign: 'left',
-    letterSpacing: -0.5,
-    textShadowColor: 'rgba(0, 0, 0, 0.4)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  suggestSubtitle: {
-    fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.9)',
-    textAlign: 'left',
     marginBottom: 8,
-    lineHeight: 18,
-    fontWeight: '500',
   },
   suggestButton: {
-    borderRadius: 10,
+    borderRadius: 6,
     overflow: 'hidden',
     alignSelf: 'flex-start',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.2,
     shadowRadius: 4,
-    elevation: 4,
+    elevation: 2,
   },
   suggestButtonGradient: {
     flexDirection: 'row',
@@ -874,21 +1016,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 8,
     paddingHorizontal: 16,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.35)',
+    borderRadius: 6,
+    backgroundColor: '#fff',
   },
   suggestButtonIcon: {
-    marginRight: 10,
+    marginRight: 6,
   },
   suggestButtonText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#fff',
-    letterSpacing: 0.2,
-    textShadowColor: 'rgba(0, 0, 0, 0.2)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
+    color: '#000',
   },
   sectionTitle: {
     fontSize: 24,
@@ -904,11 +1041,10 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'space-between',
     marginTop: 0,
-    paddingHorizontal: 16,
   },
   gridItem: {
-    width: '47%', // 47% ensures 2 items per row with space between
-    marginBottom: 20,
+    width: '48%',
+    marginBottom: 16,
   },
   gridItemLeft: {
     marginRight: 0,
@@ -916,6 +1052,59 @@ const styles = StyleSheet.create({
   gridItemWrapper: {
     width: '100%',
     overflow: 'hidden',
+  },
+  backdropCard: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#1a1a1a',
+  },
+  backdropImage: {
+    width: '100%',
+    height: '100%',
+  },
+  backdropPlaceholder: {
+    backgroundColor: '#2a2a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  backdropGradient: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: '60%',
+    justifyContent: 'flex-end',
+    padding: 12,
+  },
+  backdropInfo: {
+    width: '100%',
+  },
+  backdropTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 6,
+  },
+  backdropMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  backdropYear: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  backdropRating: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  backdropRatingText: {
+    fontSize: 13,
+    color: '#fff',
+    fontWeight: '600',
   },
   loadingMoreContainer: {
     alignItems: 'center',
@@ -964,13 +1153,13 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     backgroundColor: '#1a1a1a',
-    borderRadius: 20,
+    borderRadius: 12,
     width: '100%',
     maxWidth: 500,
     maxHeight: '90%',
     padding: 24,
     borderWidth: 1,
-    borderColor: 'rgba(255, 59, 48, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1004,8 +1193,8 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   genreChipSelected: {
-    backgroundColor: 'rgba(255, 59, 48, 0.8)',
-    borderColor: 'rgba(255, 59, 48, 1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderColor: 'rgba(255, 255, 255, 0.4)',
   },
   genreChipText: {
     fontSize: 15,
@@ -1019,10 +1208,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 20,
-    backgroundColor: 'rgba(94, 92, 230, 0.3)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     marginRight: 12,
     borderWidth: 1,
-    borderColor: 'rgba(94, 92, 230, 0.6)',
+    borderColor: 'rgba(255, 255, 255, 0.2)',
     flexDirection: 'row',
     alignItems: 'center',
   },
@@ -1038,14 +1227,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   suggestButton: {
-    borderRadius: 14,
+    borderRadius: 8,
     overflow: 'hidden',
     width: '100%',
-    shadowColor: '#AF52DE',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
   },
   modalSuggestButtonGradient: {
     flexDirection: 'row',
@@ -1053,12 +1242,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 16,
     paddingHorizontal: 24,
-    borderRadius: 14,
+    borderRadius: 8,
+    backgroundColor: '#fff',
   },
   modalSuggestButtonText: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#fff',
+    color: '#000',
     letterSpacing: 0.5,
   },
   // Suggestion view styles
@@ -1117,20 +1307,20 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   suggestionActionButton: {
-    borderRadius: 12,
+    borderRadius: 8,
     overflow: 'hidden',
     width: '100%',
-    shadowColor: '#AF52DE',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
   },
   suggestionActionButtonSecondary: {
-    shadowColor: '#5E5CE6',
+    shadowColor: '#000',
   },
   suggestionActionButtonTertiary: {
-    shadowColor: '#666',
+    shadowColor: '#000',
   },
   suggestionActionButtonGradient: {
     flexDirection: 'row',
@@ -1138,7 +1328,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 14,
     paddingHorizontal: 24,
-    borderRadius: 12,
+    borderRadius: 8,
+    backgroundColor: '#fff',
   },
   suggestionActionButtonSecondaryGradient: {
     flexDirection: 'row',
@@ -1146,10 +1337,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 14,
     paddingHorizontal: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(94, 92, 230, 0.8)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(94, 92, 230, 1)',
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   suggestionActionButtonTertiaryGradient: {
     flexDirection: 'row',
@@ -1168,7 +1359,7 @@ const styles = StyleSheet.create({
   suggestionActionText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#fff',
+    color: '#000',
     letterSpacing: 0.3,
   },
 });
