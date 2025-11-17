@@ -3,22 +3,31 @@ const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const VIDEASY_API_URL = 'https://api.videasy.net/cdn/sources-with-title';
 const VIDEASY_DECRYPT_URL = 'https://enc-dec.app/api/dec-videasy';
 
-async function soraFetch(url, options = { headers: {}, method: 'GET', body: null, encoding: 'utf-8' }) {
-  try {
-    return await fetchv2(
-      url,
-      options.headers ?? {},
-      options.method ?? 'GET',
-      options.body ?? null,
-      true,
-      options.encoding ?? 'utf-8'
-    );
-  } catch (e) {
+async function safeFetch(url, options = { headers: {}, method: 'GET', body: null, encoding: 'utf-8' }) {
+  const { headers = {}, method = 'GET', body = null, encoding = 'utf-8' } = options;
+
+  if (typeof fetchv2 === 'function') {
     try {
-      return await fetch(url, options);
+      return await fetchv2(url, headers, method, body, true, encoding);
     } catch (error) {
-      return null;
+      console.log('[VideasyService] fetchv2 failed, falling back to fetch:', error?.message || error);
     }
+  }
+
+  const fetchOptions = {
+    method,
+    headers,
+  };
+
+  if (body) {
+    fetchOptions.body = body;
+  }
+
+  try {
+    return await fetch(url, fetchOptions);
+  } catch (error) {
+    console.log('[VideasyService] fetch failed:', error?.message || error);
+    return null;
   }
 }
 
@@ -28,7 +37,7 @@ async function fetchTmdbDetails(mediaType, tmdbId) {
       ? `${TMDB_BASE_URL}/movie/${tmdbId}?append_to_response=external_ids&language=en&api_key=${TMDB_API_KEY}`
       : `${TMDB_BASE_URL}/tv/${tmdbId}?append_to_response=external_ids&language=en&api_key=${TMDB_API_KEY}`;
 
-  const response = await soraFetch(endpoint);
+  const response = await safeFetch(endpoint);
   if (!response) {
     throw new Error('Failed to reach TMDB for Videasy');
   }
@@ -56,7 +65,11 @@ async function decryptVideasyPayload(encryptedText, tmdbId) {
     id: String(tmdbId),
   });
 
-  const response = await fetchv2(VIDEASY_DECRYPT_URL, headers, 'POST', body);
+  const response = await safeFetch(VIDEASY_DECRYPT_URL, {
+    headers,
+    method: 'POST',
+    body,
+  });
   if (!response) {
     throw new Error('Failed to decrypt Videasy payload');
   }
@@ -114,7 +127,7 @@ function buildSubtitles(subtitles) {
   ];
 }
 
-async function fetchVideasyStream({ mediaType, tmdbId, season = '1', episode = '1' }) {
+async function fetchVideasyStream({ mediaType, tmdbId, season = '1', episode = '1', forceSeasonOne = false }) {
   const tmdbData = await fetchTmdbDetails(mediaType, tmdbId);
 
   const title =
@@ -132,18 +145,20 @@ async function fetchVideasyStream({ mediaType, tmdbId, season = '1', episode = '
   const year = dateString ? new Date(dateString).getFullYear() : '';
   const imdbId = tmdbData?.external_ids?.imdb_id || '';
 
+  const seasonId = forceSeasonOne ? '1' : season;
+
   const queryParams = {
-    title: encodeURIComponent(title),
+    title,
     mediaType,
     year,
     tmdbId,
     imdbId,
-    seasonId: season,
+    seasonId,
     episodeId: episode,
   };
 
   const videasyUrl = buildVideasyUrl(queryParams);
-  const encryptedResponse = await soraFetch(videasyUrl);
+  const encryptedResponse = await safeFetch(videasyUrl);
   if (!encryptedResponse) {
     throw new Error('Failed to fetch Videasy encrypted payload');
   }
@@ -177,7 +192,7 @@ export const VideasyService = {
     };
   },
 
-  async fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber) {
+  async fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, { forceSeasonOne = false } = {}) {
     const seasonId = season ? String(season) : '1';
     const episodeId = episodeNumber ? String(episodeNumber) : '1';
 
@@ -186,6 +201,7 @@ export const VideasyService = {
       tmdbId,
       season: seasonId,
       episode: episodeId,
+      forceSeasonOne,
     });
 
     return {
@@ -198,5 +214,7 @@ export const VideasyService = {
     };
   },
 };
+
+
 
 

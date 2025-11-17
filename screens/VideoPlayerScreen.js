@@ -1601,19 +1601,25 @@ export default function VideoPlayerScreen({ route, navigation }) {
         const normalizedSeason = season ? String(season) : '1';
         const normalizedEpisodeNumber = episodeNumber ? String(episodeNumber) : '1';
 
-        // Check if content is anime - if so, use Videasy as first source
-        const isAnimeContent = episode && isAnime();
-        const shouldUseVideasyPrimary = isAnimeContent && !videasyFailed;
+        const isVideasyPreferred = source === 'videasy';
         
         // Select the appropriate service
-        // For anime episodes, use Videasy first, otherwise use selected source
         let service;
         let currentSource;
-        if (shouldUseVideasyPrimary) {
-          service = VideasyService;
+        if (isVideasyPreferred) {
+          service = {
+            async fetchEpisodeWithSubtitles(tmdbId, seasonValue, episodeValue, selectedServerName) {
+              return await VideasyService.fetchEpisodeWithSubtitles(
+                tmdbId,
+                seasonValue,
+                episodeValue,
+                { forceSeasonOne: true },
+                selectedServerName
+              );
+            },
+            fetchMovieWithSubtitles: VideasyService.fetchMovieWithSubtitles,
+          };
           currentSource = 'videasy';
-          setVideoSource('videasy');
-          console.log('[VideoPlayer] Anime detected, using Videasy as primary source');
         } else {
           service =
             source === 'n3tflix'
@@ -1627,13 +1633,18 @@ export default function VideoPlayerScreen({ route, navigation }) {
         }
 
         const attemptVideasyFallback = async () => {
-          if (currentSource === 'videasy' || videasyFailed) {
+          if (!isVideasyPreferred || currentSource === 'videasy' || videasyFailed) {
             return null;
           }
           try {
             let videasyResult;
             if (!isMovie && episode && season && episodeNumber) {
-              videasyResult = await VideasyService.fetchEpisodeWithSubtitles(tmdbId, normalizedSeason, normalizedEpisodeNumber);
+              videasyResult = await VideasyService.fetchEpisodeWithSubtitles(
+                tmdbId,
+                normalizedSeason,
+                normalizedEpisodeNumber,
+                { forceSeasonOne: true }
+              );
             } else {
               videasyResult = await VideasyService.fetchMovieWithSubtitles(tmdbId);
             }
@@ -1772,14 +1783,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
           }
         }
 
-        // Final fallback: Try Videasy if everything else failed
-        if ((!result || !result.streamUrl) && currentSource !== 'videasy') {
-          const videasyFallback = await attemptVideasyFallback();
-          if (videasyFallback) {
-            result = videasyFallback;
-          }
-        }
-
+        // No additional final fallback to Videasy when not selected
         if (result && result.streamUrl) {
           setStreamUrl(result.streamUrl);
           

@@ -208,6 +208,38 @@ export const VideoPlayerProvider = ({ children }) => {
     }).start();
   };
   
+  const resetPlayerState = useCallback(async () => {
+    try {
+      if (player) {
+        try {
+          player.pause();
+        } catch (pauseError) {
+          console.warn('Error pausing player during reset:', pauseError);
+        }
+        try {
+          await player.replaceAsync({ uri: '' });
+        } catch (replaceError) {
+          console.warn('Error clearing player source during reset:', replaceError);
+        }
+      }
+    } catch (playerError) {
+      console.warn('Unexpected error resetting player instance:', playerError);
+    }
+
+    setStreamUrl(null);
+    setItem(null);
+    setEpisode(null);
+    setSeason(null);
+    setEpisodeNumber(null);
+    setResumePosition(0);
+    setIsPlaying(false);
+    setPosition(0);
+    setDuration(0);
+    positionRef.current = 0;
+    durationRef.current = 0;
+    hasSeekedToResumePosition.current = false;
+  }, [player]);
+
   const value = {
     player,
     streamUrl,
@@ -232,6 +264,7 @@ export const VideoPlayerProvider = ({ children }) => {
     transitionAnim,
     animateToFullscreen,
     animateToMinimized,
+    resetPlayerState,
   };
   
   return (

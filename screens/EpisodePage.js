@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   ScrollView,
@@ -32,6 +32,8 @@ const VIDEO_HEIGHT = SCREEN_WIDTH * 0.5625; // 16:9 aspect ratio
 export default function EpisodePage({ route, navigation }) {
   const { item: routeItem, episode: routeEpisode, season: routeSeason, episodeNumber: routeEpisodeNumber, resumePosition: routeResumePosition } = route.params || {};
   const insets = useSafeAreaInsets();
+  const safeTopPadding = Math.max(insets.top, 0);
+  const isScreenActiveRef = useRef(true);
   
   // Use shared player context
   const {
@@ -50,6 +52,7 @@ export default function EpisodePage({ route, navigation }) {
     positionRef,
     transitionAnim,
     animateToMinimized,
+    resetPlayerState,
   } = useVideoPlayerContext();
   
   // Use route params or context values
@@ -75,6 +78,39 @@ export default function EpisodePage({ route, navigation }) {
   
   const scrollY = useRef(new Animated.Value(0)).current;
   const isFocused = useIsFocused(); // Track if this screen is focused
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', () => {
+      resetPlayerState();
+    });
+    return unsubscribe;
+  }, [navigation, resetPlayerState]);
+
+  const handleBackPress = () => {
+    resetPlayerState();
+    navigation.goBack();
+  };
+
+  const handleStreamFailure = useCallback(
+    (message = 'Failed to load video') => {
+      resetPlayerState();
+      if (!isScreenActiveRef.current) {
+        return;
+      }
+      setError((prev) => prev || message);
+      setLoading(false);
+    },
+    [resetPlayerState]
+  );
+
+  const handleErrorDismiss = () => {
+    if (!isScreenActiveRef.current) {
+      return;
+    }
+    setError(null);
+    setLoading(true);
+    resetPlayerState();
+  };
+
   
   // UI state management
   const controlsOpacity = useRef(new Animated.Value(1)).current;
@@ -144,6 +180,12 @@ export default function EpisodePage({ route, navigation }) {
   // Determine if this is a movie or TV show
   const isMovie = !episode && (item?.title || item?.media_type === 'movie');
   const isTVShow = !isMovie;
+
+  useEffect(() => {
+    if (!item) return;
+    setError(null);
+    setLoading(true);
+  }, [item?.id, isMovie, season, episodeNumber]);
   
   // Check if content is anime (genre ID 16 = Animation, or original_language = 'ja')
   const isAnime = () => {
@@ -159,28 +201,40 @@ export default function EpisodePage({ route, navigation }) {
 
   // Initialize player when route params change
   useEffect(() => {
+    if (!isFocused) {
+      return;
+    }
     if (item && (streamUrl || routeItem)) {
       // Only initialize if we have new route params
       if (routeItem) {
         const fetchAndInitialize = async () => {
+          if (!isScreenActiveRef.current) {
+            return;
+          }
           setLoading(true);
           setError(null);
           
           try {
             const source = await StorageService.getVideoSource();
             const preferredSource = source;
-            
-            // Check if content is anime - if so, use Videasy as first source
-            const isAnimeContent = !isMovie && episode && isAnime();
+            const isVideasyPreferred = source === 'videasy';
             
             // Select the appropriate service
-            // For anime episodes, use Videasy first, otherwise use selected source
             let service;
             let currentSource;
-            if (isAnimeContent) {
-              service = VideasyService;
+            if (isVideasyPreferred) {
+              service = {
+                async fetchEpisodeWithSubtitles(tmdbId, seasonValue, episodeValue) {
+                  return await VideasyService.fetchEpisodeWithSubtitles(
+                    tmdbId,
+                    seasonValue,
+                    episodeValue,
+                    { forceSeasonOne: true }
+                  );
+                },
+                fetchMovieWithSubtitles: VideasyService.fetchMovieWithSubtitles,
+              };
               currentSource = 'videasy';
-              console.log('[EpisodePage] Anime detected, using Videasy as primary source');
             } else {
               service =
                 source === 'n3tflix'
@@ -195,7 +249,7 @@ export default function EpisodePage({ route, navigation }) {
             let result = null;
             
             const attemptVideasyFallback = async () => {
-              if (currentSource === 'videasy') {
+              if (!isVideasyPreferred || currentSource === 'videasy') {
                 return null;
               }
               try {
@@ -205,7 +259,12 @@ export default function EpisodePage({ route, navigation }) {
                 } else if (episode) {
                   const fallbackSeason = season ? String(season) : '1';
                   const fallbackEpisode = episodeNumber ? String(episodeNumber) : '1';
-                  videasyResult = await VideasyService.fetchEpisodeWithSubtitles(item.id, fallbackSeason, fallbackEpisode);
+                  videasyResult = await VideasyService.fetchEpisodeWithSubtitles(
+                    item.id,
+                    fallbackSeason,
+                    fallbackEpisode,
+                    { forceSeasonOne: true }
+                  );
                 }
                 if (videasyResult && videasyResult.streamUrl) {
                   currentSource = 'videasy';
@@ -327,16 +386,13 @@ export default function EpisodePage({ route, navigation }) {
                 }
               }
               
-              // Final fallback: Videasy
-              if ((!result || !result.streamUrl) && currentSource !== 'videasy') {
-                const videasyFallback = await attemptVideasyFallback();
-                if (videasyFallback) {
-                  result = videasyFallback;
-                }
-              }
+              // No Videasy fallback when not selected
             }
             
             if (result && result.streamUrl) {
+              if (!isScreenActiveRef.current) {
+                return;
+              }
               // Initialize the shared player
               initializePlayer({
                 item,
@@ -348,36 +404,38 @@ export default function EpisodePage({ route, navigation }) {
               });
               setStreamUrl(result.streamUrl);
             } else {
-              setError('Failed to fetch stream URL');
+              handleStreamFailure('Failed to fetch stream URL');
             }
           } catch (err) {
             console.error('Error fetching stream:', err);
-            setError('Failed to load video');
+            handleStreamFailure('Failed to load video');
           } finally {
-            setLoading(false);
+            if (isScreenActiveRef.current) {
+              setLoading(false);
+            }
           }
         };
         
         fetchAndInitialize();
       }
     }
-  }, [routeItem?.id, routeEpisode?.id, routeSeason, routeEpisodeNumber]);
+  }, [isFocused, routeItem?.id, routeEpisode?.id, routeSeason, routeEpisodeNumber]);
 
   // Update loading state based on player status
   useEffect(() => {
     if (player && streamUrl) {
       const checkStatus = setInterval(() => {
-        if (player.duration > 0) {
+        const playerReady = player.duration > 0 || player.playing === true;
+        if (playerReady) {
           setLoading(false);
-        } else if (player.status === 'error') {
-          setError('Failed to load video');
-          setLoading(false);
+        } else if (player.status === 'error' && !error) {
+          handleStreamFailure();
         }
-      }, 100);
+      }, 150);
       
       return () => clearInterval(checkStatus);
     }
-  }, [player, streamUrl]);
+  }, [player, streamUrl, error, handleStreamFailure]);
 
   // Player is configured in context, no need to configure here
 
@@ -678,6 +736,20 @@ export default function EpisodePage({ route, navigation }) {
     }, [isFocused, streamUrl])
   );
 
+  useFocusEffect(
+    React.useCallback(() => {
+      isScreenActiveRef.current = true;
+      setLoading(true);
+      setError(null);
+      return () => {
+        isScreenActiveRef.current = false;
+        resetPlayerState();
+        setError(null);
+        setLoading(false);
+      };
+    }, [resetPlayerState])
+  );
+
   const handleNextEpisode = async () => {
     if (!nextEpisode) return;
     
@@ -748,7 +820,7 @@ export default function EpisodePage({ route, navigation }) {
         scrollEventThrottle={16}
       >
         {/* Minimized Video Player */}
-        <View style={styles.videoContainer}>
+        <View style={[styles.videoContainer, { paddingTop: safeTopPadding }]}>
           {loading && !streamUrl ? (
             <View style={[styles.videoPlaceholder, { height: VIDEO_HEIGHT }]}>
               {item?.backdrop_path ? (
@@ -772,8 +844,16 @@ export default function EpisodePage({ route, navigation }) {
             </View>
           ) : error ? (
             <View style={[styles.videoPlaceholder, { height: VIDEO_HEIGHT }]}>
+              <TouchableOpacity
+                style={styles.errorCloseButton}
+                onPress={handleErrorDismiss}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="close" size={18} color="#fff" />
+              </TouchableOpacity>
               <Ionicons name="alert-circle" size={48} color="#ff3b30" />
               <Text style={styles.errorText}>{error}</Text>
+              <Text style={styles.errorSubtext}>You can pick another source or try again later.</Text>
             </View>
           ) : streamUrl && player && isFocused ? (
             <Animated.View 
@@ -1070,7 +1150,7 @@ export default function EpisodePage({ route, navigation }) {
         <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => navigation.goBack()}
+          onPress={handleBackPress}
           activeOpacity={0.7}
         >
           <Ionicons name="arrow-back" size={24} color="#fff" />
@@ -1144,6 +1224,24 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     textAlign: 'center',
+  },
+  errorSubtext: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginTop: 6,
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  errorCloseButton: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
   },
   videoOverlay: {
     ...StyleSheet.absoluteFillObject,
