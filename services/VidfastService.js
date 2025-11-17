@@ -62,7 +62,16 @@ async function fetchv2(url, headers = {}, method = 'GET', body = null) {
     fetchOptions.body = body;
   }
   
-  return await fetch(url, fetchOptions);
+  const response = await fetch(url, fetchOptions);
+  
+  // Check for HTTP error status codes
+  if (!response.ok) {
+    const error = new Error(`HTTP error! status: ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  
+  return response;
 }
 
 // Helper function to convert WordArray to Uint8Array
@@ -112,7 +121,13 @@ async function check4KAvailability(m3u8Url) {
       "Referer": BASE_URL
     };
     
-    const response = await fetchv2(m3u8Url, headers);
+    let response;
+    try {
+      response = await fetchv2(m3u8Url, headers);
+    } catch (error) {
+      console.log(`4K Check failed for ${m3u8Url}: ${error.message}`);
+      return { available: false, url: null };
+    }
     const playlistContent = await response.text();
     
     const has4K = playlistContent.includes('RESOLUTION=3840x2160');
@@ -177,7 +192,12 @@ async function check4KAvailability(m3u8Url) {
 // Main function to extract stream from vidfast
 async function ilovefeet(imdbId, isSeries = false, season = null, episode = null, preferredFormat = null, selectedServerName = null) {
   const configUrl = 'https://raw.githubusercontent.com/yogesh-hacker/MediaVanced/refs/heads/main/sites/vidfast.py';
-  const configResponse = await fetchv2(configUrl);
+  let configResponse;
+  try {
+    configResponse = await fetchv2(configUrl);
+  } catch (error) {
+    throw new Error(`Failed to fetch Vidfast config: ${error.message}`);
+  }
   const configText = await configResponse.text();
 
   const keyHexMatch = configText.match(/key_hex\s*=\s*['"]([a-f0-9]+)['"]/);
@@ -250,7 +270,12 @@ async function ilovefeet(imdbId, isSeries = false, season = null, episode = null
     headers["X-Csrf-Token"] = csrfTokenMatch[1];
   }
 
-  const pageResponse = await fetchv2(baseUrl, headers);
+  let pageResponse;
+  try {
+    pageResponse = await fetchv2(baseUrl, headers);
+  } catch (error) {
+    throw new Error(`Failed to fetch Vidfast page: ${error.message}`);
+  }
   const pageText = await pageResponse.text();
 
   let match = pageText.match(/\\"en\\":\\"([^"]+)\\"/);
@@ -301,7 +326,12 @@ async function ilovefeet(imdbId, isSeries = false, season = null, episode = null
     .replace('{STATIC_PATH}', config.staticPath)
     .replace('{ENCODED_FINAL}', encodedFinal);
 
-  const serversResponse = await fetchv2(apiServers, headers);
+  let serversResponse;
+  try {
+    serversResponse = await fetchv2(apiServers, headers);
+  } catch (error) {
+    throw new Error(`Failed to fetch Vidfast servers: ${error.message}`);
+  }
   const serverList = await serversResponse.json();
 
   if (!serverList || serverList.length === 0) {
@@ -316,11 +346,6 @@ async function ilovefeet(imdbId, isSeries = false, season = null, episode = null
 
     try {
       const streamResponse = await fetchv2(apiStream, headers);
-      
-      if (streamResponse.status !== 200) {
-        throw new Error(`Server ${index} returned status ${streamResponse.status}`);
-      }
-      
       const streamText = await streamResponse.text();
       
       let data;
@@ -522,7 +547,12 @@ async function extractStreamUrl(ID, selectedServerName = null) {
           "X-Requested-With": "XMLHttpRequest",
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
       };
-      const tmdbResponse = await fetchv2(`https://api.themoviedb.org/3/movie/${tmdbID}?append_to_response=external_ids`, headersOne);
+      let tmdbResponse;
+      try {
+        tmdbResponse = await fetchv2(`https://api.themoviedb.org/3/movie/${tmdbID}?append_to_response=external_ids`, headersOne);
+      } catch (error) {
+        throw new Error(`Failed to fetch TMDB data: ${error.message}`);
+      }
       const tmdbData = await tmdbResponse.json();
       const imdbID = tmdbData.imdb_id;
 
@@ -574,7 +604,12 @@ async function extractStreamUrl(ID, selectedServerName = null) {
           "X-Requested-With": "XMLHttpRequest",
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
       };
-      const tmdbResponse = await fetchv2(`https://api.themoviedb.org/3/tv/${tmdbID}?append_to_response=external_ids`, headersOne);
+      let tmdbResponse;
+      try {
+        tmdbResponse = await fetchv2(`https://api.themoviedb.org/3/tv/${tmdbID}?append_to_response=external_ids`, headersOne);
+      } catch (error) {
+        throw new Error(`Failed to fetch TMDB data: ${error.message}`);
+      }
       const tmdbData = await tmdbResponse.json();
       const imdbID = tmdbData.external_ids.imdb_id;
 
@@ -614,13 +649,15 @@ async function extractStreamUrl(ID, selectedServerName = null) {
       };
     }
   } catch (error) {
-    console.error('Error extracting stream URL:', error);
-    return {
-      streams: [],
-      subtitles: [],
-      serverList: [],
-      currentServer: null
-    };
+    console.error('Error extracting stream URL from Vidfast:', error);
+    console.error('Error details:', {
+      message: error.message,
+      status: error.status,
+      stack: error.stack
+    });
+    // Re-throw the error so it can be caught by the caller
+    // This allows the fallback mechanism to properly detect failures
+    throw error;
   }
 }
 
@@ -667,36 +704,48 @@ export const VidfastService = {
 
   // Fetch movie with subtitles
   async fetchMovieWithSubtitles(tmdbId, selectedServerName = null) {
-    const result = await extractStreamUrl(`/movie/${tmdbId}`, selectedServerName);
-    
-    // Get the first valid stream URL
-    const streamUrl = result.streams && result.streams.length > 0 
-      ? result.streams.find(url => url && url.startsWith('http') && (url.includes('.m3u8') || url.includes('.mp4'))) || result.streams[0]
-      : null;
-    
-    return {
-      streamUrl: streamUrl,
-      subtitles: result.subtitles || [],
-      serverList: result.serverList || [],
-      currentServer: result.currentServer || null
-    };
+    try {
+      const result = await extractStreamUrl(`/movie/${tmdbId}`, selectedServerName);
+      
+      // Get the first valid stream URL
+      const streamUrl = result.streams && result.streams.length > 0 
+        ? result.streams.find(url => url && url.startsWith('http') && (url.includes('.m3u8') || url.includes('.mp4'))) || result.streams[0]
+        : null;
+      
+      return {
+        streamUrl: streamUrl,
+        subtitles: result.subtitles || [],
+        serverList: result.serverList || [],
+        currentServer: result.currentServer || null
+      };
+    } catch (error) {
+      console.error('VidfastService.fetchMovieWithSubtitles error:', error);
+      // Re-throw to allow fallback mechanism to detect the failure
+      throw error;
+    }
   },
 
   // Fetch episode with subtitles
   async fetchEpisodeWithSubtitles(tmdbId, season, episode, selectedServerName = null) {
-    const result = await extractStreamUrl(`/tv/${tmdbId}/${season}/${episode}`, selectedServerName);
-    
-    // Get the first valid stream URL
-    const streamUrl = result.streams && result.streams.length > 0 
-      ? result.streams.find(url => url && url.startsWith('http') && (url.includes('.m3u8') || url.includes('.mp4'))) || result.streams[0]
-      : null;
-    
-    return {
-      streamUrl: streamUrl,
-      subtitles: result.subtitles || [],
-      serverList: result.serverList || [],
-      currentServer: result.currentServer || null
-    };
+    try {
+      const result = await extractStreamUrl(`/tv/${tmdbId}/${season}/${episode}`, selectedServerName);
+      
+      // Get the first valid stream URL
+      const streamUrl = result.streams && result.streams.length > 0 
+        ? result.streams.find(url => url && url.startsWith('http') && (url.includes('.m3u8') || url.includes('.mp4'))) || result.streams[0]
+        : null;
+      
+      return {
+        streamUrl: streamUrl,
+        subtitles: result.subtitles || [],
+        serverList: result.serverList || [],
+        currentServer: result.currentServer || null
+      };
+    } catch (error) {
+      console.error('VidfastService.fetchEpisodeWithSubtitles error:', error);
+      // Re-throw to allow fallback mechanism to detect the failure
+      throw error;
+    }
   },
 };
 

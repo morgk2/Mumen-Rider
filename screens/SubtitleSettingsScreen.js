@@ -6,10 +6,12 @@ import {
   ScrollView,
   TouchableOpacity,
   Dimensions,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LANGUAGE_CODES } from '../services/OpenSubtitlesService';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -26,6 +28,8 @@ export default function SubtitleSettingsScreen({ navigation }) {
   const [subtitleShadow, setSubtitleShadow] = useState(false);
   const [subtitleBackground, setSubtitleBackground] = useState(true);
   const [subtitleOutline, setSubtitleOutline] = useState(false);
+  const [preferredLanguage, setPreferredLanguage] = useState('eng');
+  const [showLanguageModal, setShowLanguageModal] = useState(false);
 
   useEffect(() => {
     loadSubtitleSettings();
@@ -49,6 +53,7 @@ export default function SubtitleSettingsScreen({ navigation }) {
         setSubtitleShadow(settings.shadow || false);
         setSubtitleBackground(settings.background !== undefined ? settings.background : true);
         setSubtitleOutline(settings.outline || false);
+        setPreferredLanguage(settings.preferredLanguage || 'eng');
       }
     } catch (error) {
       console.error('Error loading subtitle settings:', error);
@@ -65,6 +70,7 @@ export default function SubtitleSettingsScreen({ navigation }) {
         shadow: subtitleShadow,
         background: subtitleBackground,
         outline: subtitleOutline,
+        preferredLanguage: preferredLanguage,
       };
       await AsyncStorage.setItem(SUBTITLE_SETTINGS_KEY, JSON.stringify(settings));
     } catch (error) {
@@ -75,7 +81,7 @@ export default function SubtitleSettingsScreen({ navigation }) {
   // Save settings whenever they change
   useEffect(() => {
     saveSubtitleSettings();
-  }, [subtitleColor, subtitleSize, subtitlePosition, subtitleFont, subtitleShadow, subtitleBackground, subtitleOutline]);
+  }, [subtitleColor, subtitleSize, subtitlePosition, subtitleFont, subtitleShadow, subtitleBackground, subtitleOutline, preferredLanguage]);
 
   return (
     <View style={styles.container}>
@@ -264,6 +270,23 @@ export default function SubtitleSettingsScreen({ navigation }) {
           </ScrollView>
         </View>
 
+        {/* Preferred Language */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Preferred Subtitles</Text>
+          <TouchableOpacity
+            style={styles.languageSelector}
+            onPress={() => setShowLanguageModal(true)}
+          >
+            <Text style={styles.languageSelectorLabel}>Language</Text>
+            <View style={styles.languageSelectorValue}>
+              <Text style={styles.languageSelectorText}>
+                {LANGUAGE_CODES[preferredLanguage] || preferredLanguage}
+              </Text>
+              <Ionicons name="chevron-forward" size={20} color="rgba(255, 255, 255, 0.5)" style={{ marginLeft: 8 }} />
+            </View>
+          </TouchableOpacity>
+        </View>
+
         {/* Toggles */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Effects</Text>
@@ -298,6 +321,55 @@ export default function SubtitleSettingsScreen({ navigation }) {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Language Selection Modal */}
+      <Modal
+        visible={showLanguageModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowLanguageModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { paddingTop: insets.top + 20 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Language</Text>
+              <TouchableOpacity
+                onPress={() => setShowLanguageModal(false)}
+                style={styles.modalCloseButton}
+              >
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.modalScrollView}>
+              {Object.entries(LANGUAGE_CODES).map(([code, name]) => (
+                <TouchableOpacity
+                  key={code}
+                  style={[
+                    styles.languageOption,
+                    preferredLanguage === code && styles.languageOptionActive,
+                  ]}
+                  onPress={() => {
+                    setPreferredLanguage(code);
+                    setShowLanguageModal(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.languageOptionText,
+                      preferredLanguage === code && styles.languageOptionTextActive,
+                    ]}
+                  >
+                    {name}
+                  </Text>
+                  {preferredLanguage === code && (
+                    <Ionicons name="checkmark" size={20} color="#fff" />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -486,6 +558,83 @@ const styles = StyleSheet.create({
   },
   toggleThumbActive: {
     alignSelf: 'flex-end',
+  },
+  languageSelector: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  languageSelectorLabel: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  languageSelectorValue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  languageSelectorText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#1a1a1a',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  modalCloseButton: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalScrollView: {
+    maxHeight: 500,
+  },
+  languageOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  languageOptionActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.1)',
+  },
+  languageOptionText: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 16,
+  },
+  languageOptionTextActive: {
+    color: '#fff',
+    fontWeight: '600',
   },
 });
 

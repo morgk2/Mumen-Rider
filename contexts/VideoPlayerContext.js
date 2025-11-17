@@ -30,15 +30,49 @@ export const VideoPlayerProvider = ({ children }) => {
     if (player && streamUrl) {
       const replaceSource = async () => {
         try {
-          await player.replaceAsync({ uri: streamUrl });
+          console.log('Replacing video source with:', streamUrl);
+          
+          // expo-video doesn't support custom headers in source config
+          // Try without headers first (most HLS streams work without them)
+          const sourceConfig = { uri: streamUrl };
+          
+          console.log('Using source config:', sourceConfig);
+          
+          
+          // Reset player state before replacing
+          try {
+            if (player.status === 'error') {
+              console.log('Player was in error state, attempting to reset...');
+              // Try to clear any previous error by replacing with null first
+              try {
+                await player.replaceAsync({ uri: '' });
+                await new Promise(resolve => setTimeout(resolve, 100));
+              } catch (resetError) {
+                console.warn('Error resetting player:', resetError);
+              }
+            }
+          } catch (e) {
+            console.warn('Could not check/reset player status:', e);
+          }
+          
+          await player.replaceAsync(sourceConfig);
           
           // Wait for player to be ready
           let checkCount = 0;
-          const maxChecks = 100;
+          const maxChecks = 200; // Increased timeout for Android HLS streams
           const checkReady = setInterval(() => {
             checkCount++;
-            if (player.duration > 0 && player.status !== 'error') {
+            const currentStatus = player.status;
+            const currentDuration = player.duration;
+            
+            // Log status every 10 checks for debugging
+            if (checkCount % 10 === 0) {
+              console.log(`Player check ${checkCount}: status=${currentStatus}, duration=${currentDuration}`);
+            }
+            
+            if (currentDuration > 0 && currentStatus !== 'error') {
               clearInterval(checkReady);
+              console.log('Player ready, duration:', currentDuration, 'status:', currentStatus);
               
               // Seek to resume position if needed
               if (resumePosition && resumePosition > 0 && !hasSeekedToResumePosition.current) {
@@ -57,12 +91,32 @@ export const VideoPlayerProvider = ({ children }) => {
                   setIsPlaying(false);
                 }
               }, 100);
-            } else if (checkCount >= maxChecks || player.status === 'error') {
+            } else if (checkCount >= maxChecks || currentStatus === 'error') {
               clearInterval(checkReady);
+              if (currentStatus === 'error') {
+                console.error('Player error status:', currentStatus, 'after', checkCount, 'checks');
+                console.error('Player duration:', currentDuration);
+                // Try to get more error details if available
+                try {
+                  if (player.error) {
+                    console.error('Player error object:', player.error);
+                  }
+                  // Check if there's an error message property
+                  if (player.errorMessage) {
+                    console.error('Player error message:', player.errorMessage);
+                  }
+                } catch (e) {
+                  console.error('Could not access error details:', e);
+                }
+              }
+              if (checkCount >= maxChecks) {
+                console.warn('Player did not become ready after', maxChecks, 'checks. Status:', currentStatus, 'Duration:', currentDuration);
+              }
             }
           }, 100);
         } catch (error) {
           console.error('Error replacing video source:', error);
+          console.error('Error details:', error.message, error.stack);
         }
       };
       replaceSource();

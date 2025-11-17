@@ -18,6 +18,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { TMDBService } from '../services/TMDBService';
 import { VixsrcService } from '../services/VixsrcService';
 import { N3tflixService } from '../services/N3tflixService';
+import { VidfastService } from '../services/VidfastService';
+import { VideasyService } from '../services/VideasyService';
 import { WatchProgressService } from '../services/WatchProgressService';
 import { StorageService } from '../services/StorageService';
 import { CachedImage } from '../components/CachedImage';
@@ -142,6 +144,18 @@ export default function EpisodePage({ route, navigation }) {
   // Determine if this is a movie or TV show
   const isMovie = !episode && (item?.title || item?.media_type === 'movie');
   const isTVShow = !isMovie;
+  
+  // Check if content is anime (genre ID 16 = Animation, or original_language = 'ja')
+  const isAnime = () => {
+    if (!item) return false;
+    const genreIds = item.genre_ids || [];
+    const hasAnimationGenre = genreIds.includes(16); // 16 = Animation
+    const isJapanese = item.original_language === 'ja' || item.original_language === 'jp';
+    // Also check if name/title contains "anime" keyword
+    const titleLower = (item.title || item.name || '').toLowerCase();
+    const hasAnimeKeyword = titleLower.includes('anime');
+    return hasAnimationGenre || isJapanese || hasAnimeKeyword;
+  };
 
   // Initialize player when route params change
   useEffect(() => {
@@ -154,13 +168,172 @@ export default function EpisodePage({ route, navigation }) {
           
           try {
             const source = await StorageService.getVideoSource();
-            const service = source === 'n3tflix' ? N3tflixService : VixsrcService;
+            const preferredSource = source;
             
+            // Check if content is anime - if so, use Videasy as first source
+            const isAnimeContent = !isMovie && episode && isAnime();
+            
+            // Select the appropriate service
+            // For anime episodes, use Videasy first, otherwise use selected source
+            let service;
+            let currentSource;
+            if (isAnimeContent) {
+              service = VideasyService;
+              currentSource = 'videasy';
+              console.log('[EpisodePage] Anime detected, using Videasy as primary source');
+            } else {
+              service =
+                source === 'n3tflix'
+                  ? N3tflixService
+                  : source === 'vidfast'
+                  ? VidfastService
+                  : source === 'videasy'
+                  ? VideasyService
+                  : VixsrcService;
+              currentSource = source;
+            }
             let result = null;
-            if (isMovie) {
-              result = await service.fetchMovieWithSubtitles(item.id);
-            } else if (episode) {
-              result = await service.fetchEpisodeWithSubtitles(item.id, season, episodeNumber);
+            
+            const attemptVideasyFallback = async () => {
+              if (currentSource === 'videasy') {
+                return null;
+              }
+              try {
+                let videasyResult;
+                if (isMovie) {
+                  videasyResult = await VideasyService.fetchMovieWithSubtitles(item.id);
+                } else if (episode) {
+                  const fallbackSeason = season ? String(season) : '1';
+                  const fallbackEpisode = episodeNumber ? String(episodeNumber) : '1';
+                  videasyResult = await VideasyService.fetchEpisodeWithSubtitles(item.id, fallbackSeason, fallbackEpisode);
+                }
+                if (videasyResult && videasyResult.streamUrl) {
+                  currentSource = 'videasy';
+                  return videasyResult;
+                }
+              } catch (videasyError) {
+                console.error('[EpisodePage] Videasy fallback error:', videasyError);
+              }
+              return null;
+            };
+
+            try {
+              if (isMovie) {
+                result = await service.fetchMovieWithSubtitles(item.id);
+              } else if (episode) {
+                result = await service.fetchEpisodeWithSubtitles(item.id, season, episodeNumber);
+              }
+            } catch (serviceError) {
+              if (!result) {
+                const videasyFallback = await attemptVideasyFallback();
+                if (videasyFallback) {
+                  result = videasyFallback;
+                }
+              }
+
+              if (!result && currentSource === 'videasy') {
+                service =
+                  preferredSource === 'n3tflix'
+                    ? N3tflixService
+                    : preferredSource === 'vidfast'
+                    ? VidfastService
+                    : preferredSource === 'videasy'
+                    ? VixsrcService
+                    : VixsrcService;
+                currentSource = preferredSource === 'videasy' ? 'vixsrc' : preferredSource;
+                try {
+                  if (isMovie) {
+                    result = await service.fetchMovieWithSubtitles(item.id);
+                  } else if (episode) {
+                    result = await service.fetchEpisodeWithSubtitles(item.id, season, episodeNumber);
+                  }
+                } catch (preferredError) {
+                  console.error('[EpisodePage] Preferred source fallback error:', preferredError);
+                }
+              }
+
+              if (!result) {
+              // Check if it's a 404 or 403 error from vixsrc
+              const errorMessage = serviceError?.message || String(serviceError);
+              const is404or403 = errorMessage.includes('404') || errorMessage.includes('403');
+              const isVixsrc = currentSource === 'vixsrc' || (!currentSource || currentSource === 'vixsrc');
+              
+              if (is404or403 && isVixsrc) {
+                console.log('[EpisodePage] Vixsrc returned 404/403, switching to vidfast...');
+                service = VidfastService;
+                currentSource = 'vidfast';
+                
+                // Retry with vidfast
+                try {
+                  if (isMovie) {
+                    result = await service.fetchMovieWithSubtitles(item.id);
+                  } else if (episode) {
+                    result = await service.fetchEpisodeWithSubtitles(item.id, season, episodeNumber);
+                  }
+                  console.log('[EpisodePage] Vidfast fallback result:', result ? (result.streamUrl ? 'Success' : 'No stream URL') : 'Failed');
+                } catch (vidfastError) {
+                  console.error('[EpisodePage] Vidfast fallback failed:', vidfastError);
+                  result = null;
+                }
+                
+                // Third fallback: If Vidfast failed for episodes, try with season "01"
+                if ((!result || !result.streamUrl) && !isMovie && episode && season && episodeNumber && currentSource === 'vidfast') {
+                  console.log(`[EpisodePage] Vidfast failed, trying with season "01" (original: S${season}E${episodeNumber})...`);
+                  try {
+                    result = await service.fetchEpisodeWithSubtitles(item.id, '01', episodeNumber);
+                    console.log('[EpisodePage] Vidfast with S01 result:', result ? (result.streamUrl ? 'Success' : 'No stream URL') : 'Failed');
+                  } catch (s01Error) {
+                    console.error('[EpisodePage] Vidfast with S01 also failed:', s01Error);
+                    result = null;
+                  }
+                }
+              } else {
+                // Re-throw if it's not a vixsrc 404/403
+                throw serviceError;
+              }
+              }
+            }
+            
+            // Check if vixsrc returned null streamUrl (which happens on 404/403)
+            // VixsrcService catches errors and returns null instead of throwing
+            // Only check if we haven't already retried and the original source was vixsrc
+            if ((!result || !result.streamUrl) && source === 'vixsrc' && currentSource === 'vixsrc') {
+              console.log('[EpisodePage] Vixsrc returned null streamUrl, switching to vidfast...');
+              service = VidfastService;
+              currentSource = 'vidfast';
+              
+              // Retry with vidfast
+              try {
+                if (isMovie) {
+                  result = await service.fetchMovieWithSubtitles(item.id);
+                } else if (episode) {
+                  result = await service.fetchEpisodeWithSubtitles(item.id, season, episodeNumber);
+                }
+                console.log('[EpisodePage] Vidfast result:', result ? (result.streamUrl ? 'Success' : 'No stream URL') : 'Failed');
+              } catch (vidfastError) {
+                console.error('[EpisodePage] Vidfast also failed:', vidfastError);
+                result = null;
+              }
+              
+              // Third fallback: If Vidfast failed for episodes, try with season "01"
+              if ((!result || !result.streamUrl) && !isMovie && episode && season && episodeNumber && currentSource === 'vidfast') {
+                console.log(`[EpisodePage] Vidfast failed, trying with season "01" (original: S${season}E${episodeNumber})...`);
+                try {
+                  result = await service.fetchEpisodeWithSubtitles(item.id, '01', episodeNumber);
+                  console.log('[EpisodePage] Vidfast with S01 result:', result ? (result.streamUrl ? 'Success' : 'No stream URL') : 'Failed');
+                } catch (s01Error) {
+                  console.error('[EpisodePage] Vidfast with S01 also failed:', s01Error);
+                  result = null;
+                }
+              }
+              
+              // Final fallback: Videasy
+              if ((!result || !result.streamUrl) && currentSource !== 'videasy') {
+                const videasyFallback = await attemptVideasyFallback();
+                if (videasyFallback) {
+                  result = videasyFallback;
+                }
+              }
             }
             
             if (result && result.streamUrl) {

@@ -22,12 +22,14 @@ import { VideoView } from 'expo-video';
 import { useVideoPlayerContext } from '../contexts/VideoPlayerContext';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
+import Svg, { Path, G } from 'react-native-svg';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as NavigationBar from 'expo-navigation-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VixsrcService } from '../services/VixsrcService';
 import { N3tflixService } from '../services/N3tflixService';
 import { VidfastService } from '../services/VidfastService';
+import { VideasyService } from '../services/VideasyService';
 import { OpenSubtitlesService, LANGUAGE_CODES } from '../services/OpenSubtitlesService';
 import { WatchProgressService } from '../services/WatchProgressService';
 import { StorageService } from '../services/StorageService';
@@ -41,6 +43,52 @@ import { M3U8Parser } from '../utils/M3U8Parser';
 const SUBTITLE_SETTINGS_KEY = '@subtitle_settings';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+// Circular Arrow Icons for Seek Buttons (based on rewind.svg)
+const RewindIcon = ({ size = 30, color = '#fff' }) => (
+  <Svg width={size} height={size} viewBox="0 0 64 64" fill="none">
+    <Path
+      d="M34.46,53.91A21.91,21.91,0,1,0,12.55,31.78"
+      stroke={color}
+      strokeWidth="5"
+      fill="none"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <Path
+      d="M4.65 22.33L12.52 32.62L22.81 24.75"
+      stroke={color}
+      strokeWidth="5"
+      fill="none"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Svg>
+);
+
+const FastForwardIcon = ({ size = 30, color = '#fff' }) => (
+  <Svg width={size} height={size} viewBox="0 0 64 64" fill="none">
+    {/* Mirrored version of rewind icon */}
+    <G transform="translate(64, 0) scale(-1, 1)">
+      <Path
+        d="M34.46,53.91A21.91,21.91,0,1,0,12.55,31.78"
+        stroke={color}
+        strokeWidth="5"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M4.65 22.33L12.52 32.62L22.81 24.75"
+        stroke={color}
+        strokeWidth="5"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </G>
+  </Svg>
+);
 
 export default function VideoPlayerScreen({ route, navigation }) {
   const { item: routeItem, episode: routeEpisode, season: routeSeason, episodeNumber: routeEpisodeNumber } = route.params || {};
@@ -146,11 +194,19 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [selectedAudioTrack, setSelectedAudioTrack] = useState(null);
   const [showAudioSettingsModal, setShowAudioSettingsModal] = useState(false);
   const [showServerSettingsModal, setShowServerSettingsModal] = useState(false);
+  const [showEpisodeListModal, setShowEpisodeListModal] = useState(false);
+  const [seasons, setSeasons] = useState([]);
+  const [episodesBySeason, setEpisodesBySeason] = useState({});
+  const [videasyFailed, setVideasyFailed] = useState(false);
+  const videasyRetryRef = useRef(false);
+  const [selectedSeasonForList, setSelectedSeasonForList] = useState(null);
+  const [loadingEpisodes, setLoadingEpisodes] = useState(false);
   const [subtitleSearchQuery, setSubtitleSearchQuery] = useState('');
   const [subtitleSearchLanguage, setSubtitleSearchLanguage] = useState('eng');
   const [subtitleSearchResults, setSubtitleSearchResults] = useState([]);
   const [isSearchingSubtitles, setIsSearchingSubtitles] = useState(false);
   const subtitleCuesRef = useRef([]);
+  const autoSubtitleAttemptedRef = useRef(false); // Track if auto-selection has been attempted
   
   // Zoom states - using Animated.Value for smooth animations
   const zoomScale = useRef(new Animated.Value(1)).current;
@@ -185,6 +241,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [subtitleBackground, setSubtitleBackground] = useState(true);
   const [subtitleOutline, setSubtitleOutline] = useState(false);
   const [subtitleDelay, setSubtitleDelay] = useState(0); // Delay in milliseconds (-3000 to +3000)
+  const [preferredLanguage, setPreferredLanguage] = useState('eng'); // Preferred subtitle language code
   
   // Size slider width ref for calculations
   const sizeSliderWidthRef = useRef(200);
@@ -462,6 +519,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
         setSubtitleBackground(settings.background !== undefined ? settings.background : true);
         setSubtitleOutline(settings.outline || false);
         setSubtitleDelay(settings.delay !== undefined ? settings.delay : 0);
+        setPreferredLanguage(settings.preferredLanguage || 'eng');
       }
     } catch (error) {
       console.error('Error loading subtitle settings:', error);
@@ -731,6 +789,10 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const serverSettingsModalOpacity = useRef(new Animated.Value(0)).current;
   const serverSettingsModalScale = useRef(new Animated.Value(0.95)).current;
   
+  // Animation values for episode list modal
+  const episodeListModalOpacity = useRef(new Animated.Value(0)).current;
+  const episodeListModalScale = useRef(new Animated.Value(0.95)).current;
+  
   
   // Animation values for server modal
   const serverModalOpacity = useRef(new Animated.Value(0)).current;
@@ -997,7 +1059,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   // Collapse speed and subtitle options when controls are hidden (but keep fullscreen modal open)
   useEffect(() => {
-    if (!showControls && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal) {
+    if (!showControls && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && !showEpisodeListModal) {
       if (isSpeedExpanded) {
         setIsSpeedExpanded(false);
         Animated.spring(speedButtonWidth, {
@@ -1014,11 +1076,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
         setIsSubtitleSearchMode(false);
       }
     }
-  }, [showControls, isSpeedExpanded, isSubtitleExpanded, isSubtitleSearchMode, isAppearanceMode, isDelayMode, showSubtitleSettingsModal, showAudioSettingsModal, showServerSettingsModal]);
+  }, [showControls, isSpeedExpanded, isSubtitleExpanded, isSubtitleSearchMode, isAppearanceMode, isDelayMode, showSubtitleSettingsModal, showAudioSettingsModal, showServerSettingsModal, showEpisodeListModal]);
 
   // Disable controls auto-hide when any modal is active
   useEffect(() => {
-    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal;
+    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal || showEpisodeListModal;
     
     if (hasActiveModal) {
       // Clear any existing timer when modal opens
@@ -1144,6 +1206,42 @@ export default function VideoPlayerScreen({ route, navigation }) {
       ]).start();
     }
   }, [showAudioSettingsModal]);
+
+  // Animate episode list modal
+  useEffect(() => {
+    const duration = 300;
+    
+    if (showEpisodeListModal) {
+      // Fade in and scale up
+      Animated.parallel([
+        Animated.timing(episodeListModalOpacity, {
+          toValue: 1,
+          duration,
+          useNativeDriver: true,
+        }),
+        Animated.spring(episodeListModalScale, {
+          toValue: 1,
+          tension: 50,
+          friction: 7,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      // Fade out and scale down
+      Animated.parallel([
+        Animated.timing(episodeListModalOpacity, {
+          toValue: 0,
+          duration: duration * 0.7,
+          useNativeDriver: true,
+        }),
+        Animated.timing(episodeListModalScale, {
+          toValue: 0.95,
+          duration: duration * 0.7,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [showEpisodeListModal]);
 
   // Animate server settings modal (Netflix-style)
   useEffect(() => {
@@ -1321,7 +1419,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
       clearTimeout(controlsTimeoutRef.current);
     }
     // Don't auto-hide controls if any modal is active
-    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal;
+    const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal || showEpisodeListModal;
     if (!isControlsLocked && showControls && !hasActiveModal) {
       controlsTimeoutRef.current = setTimeout(() => {
         setShowControls(false);
@@ -1333,7 +1431,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
     if (!isControlsLocked) {
       setShowControls(true);
       // Don't start timer if any modal is active
-      const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal;
+      const hasActiveModal = isSubtitleExpanded || isSubtitleSearchMode || isAppearanceMode || isDelayMode || isServerExpanded || showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal || showEpisodeListModal;
       if (!hasActiveModal) {
       startControlsTimer();
       }
@@ -1379,6 +1477,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
       setLoading(true);
       setError(null);
       setIsRetryingWithVidfast(false);
+      setVideasyFailed(false);
+      videasyRetryRef.current = false;
+      // Reset auto-subtitle selection for new video
+      autoSubtitleAttemptedRef.current = false;
+      setSelectedSubtitleTrack(null);
 
       if (!item || !item.id) {
         setError('Invalid item');
@@ -1480,6 +1583,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
           // Sort tracks by priority: English first, then Arabic, then others
           const sortedTracks = sortSubtitleTracksByPriority(tracks);
           setSubtitleTracks(sortedTracks);
+          // Auto-enable subtitles for downloaded videos
+          autoEnableSubtitles(sortedTracks);
         } catch (fileError) {
           console.error('Error checking downloaded video file:', fileError);
           setError('Error accessing downloaded video. Please try re-downloading.');
@@ -1489,11 +1594,61 @@ export default function VideoPlayerScreen({ route, navigation }) {
         // Fetch from streaming service
         // Get the selected video source
         const source = await StorageService.getVideoSource();
+        const preferredSource = source;
         setVideoSource(source);
 
+        const isMovie = !episode;
+        const normalizedSeason = season ? String(season) : '1';
+        const normalizedEpisodeNumber = episodeNumber ? String(episodeNumber) : '1';
+
+        // Check if content is anime - if so, use Videasy as first source
+        const isAnimeContent = episode && isAnime();
+        const shouldUseVideasyPrimary = isAnimeContent && !videasyFailed;
+        
         // Select the appropriate service
-        let service = source === 'n3tflix' ? N3tflixService : source === 'vidfast' ? VidfastService : VixsrcService;
-        let currentSource = source;
+        // For anime episodes, use Videasy first, otherwise use selected source
+        let service;
+        let currentSource;
+        if (shouldUseVideasyPrimary) {
+          service = VideasyService;
+          currentSource = 'videasy';
+          setVideoSource('videasy');
+          console.log('[VideoPlayer] Anime detected, using Videasy as primary source');
+        } else {
+          service =
+            source === 'n3tflix'
+              ? N3tflixService
+              : source === 'vidfast'
+              ? VidfastService
+              : source === 'videasy'
+              ? VideasyService
+              : VixsrcService;
+          currentSource = source;
+        }
+
+        const attemptVideasyFallback = async () => {
+          if (currentSource === 'videasy' || videasyFailed) {
+            return null;
+          }
+          try {
+            let videasyResult;
+            if (!isMovie && episode && season && episodeNumber) {
+              videasyResult = await VideasyService.fetchEpisodeWithSubtitles(tmdbId, normalizedSeason, normalizedEpisodeNumber);
+            } else {
+              videasyResult = await VideasyService.fetchMovieWithSubtitles(tmdbId);
+            }
+            if (videasyResult && videasyResult.streamUrl) {
+              console.log('[VideoPlayer] Videasy fallback result:', videasyResult.streamUrl ? 'Success' : 'No stream URL');
+              currentSource = 'videasy';
+              setVideoSource('videasy');
+              return videasyResult;
+            }
+          } catch (videasyError) {
+            console.error('[VideoPlayer] Videasy fallback error:', videasyError);
+            setVideasyFailed(true);
+          }
+          return null;
+        };
         let result = null;
 
         try {
@@ -1503,6 +1658,39 @@ export default function VideoPlayerScreen({ route, navigation }) {
             result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
           }
         } catch (serviceError) {
+          if (!result) {
+            const videasyFallback = await attemptVideasyFallback();
+            if (videasyFallback) {
+              result = videasyFallback;
+            }
+          }
+
+          if (!result && currentSource === 'videasy') {
+            console.log('[VideoPlayer] Videasy failed, falling back to preferred source:', preferredSource);
+            service =
+              preferredSource === 'n3tflix'
+                ? N3tflixService
+                : preferredSource === 'vidfast'
+                ? VidfastService
+                : preferredSource === 'videasy'
+                ? VixsrcService
+                : VixsrcService;
+            currentSource = preferredSource === 'videasy' ? 'vixsrc' : preferredSource;
+            try {
+              if (episode && season && episodeNumber) {
+                result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
+              } else {
+                result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
+              }
+            } catch (preferredError) {
+              console.error('[VideoPlayer] Preferred source fallback error:', preferredError);
+            }
+          }
+
+          if (result) {
+            // Already recovered, skip further fallback handling
+            console.log('[VideoPlayer] Recovered from service error via fallback');
+          } else {
           // Check if it's a 404 or 403 error from vixsrc
           const errorMessage = serviceError?.message || String(serviceError);
           const is404or403 = errorMessage.includes('404') || errorMessage.includes('403');
@@ -1516,14 +1704,34 @@ export default function VideoPlayerScreen({ route, navigation }) {
             setVideoSource('vidfast');
             
             // Retry with vidfast
-            if (episode && season && episodeNumber) {
-              result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
-            } else {
-              result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
+            try {
+              if (episode && season && episodeNumber) {
+                result = await service.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
+              } else {
+                result = await service.fetchMovieWithSubtitles(tmdbId, selectedServerName);
+              }
+              console.log('[VideoPlayer] Vidfast fallback result:', result ? (result.streamUrl ? 'Success' : 'No stream URL') : 'Failed');
+            } catch (vidfastError) {
+              console.error('[VideoPlayer] Vidfast fallback failed:', vidfastError);
+              // Set result to null so it can be handled below
+              result = null;
+            }
+            
+            // Third fallback: If Vidfast failed for episodes, try with season "01"
+            if ((!result || !result.streamUrl) && episode && season && episodeNumber && currentSource === 'vidfast') {
+              console.log(`[VideoPlayer] Vidfast failed, trying with season "01" (original: S${season}E${episodeNumber})...`);
+              try {
+                result = await service.fetchEpisodeWithSubtitles(tmdbId, '01', episodeNumber, selectedServerName);
+                console.log('[VideoPlayer] Vidfast with S01 result:', result ? (result.streamUrl ? 'Success' : 'No stream URL') : 'Failed');
+              } catch (s01Error) {
+                console.error('[VideoPlayer] Vidfast with S01 also failed:', s01Error);
+                result = null;
+              }
             }
           } else {
             // Re-throw if it's not a vixsrc 404/403
             throw serviceError;
+          }
           }
         }
 
@@ -1550,6 +1758,26 @@ export default function VideoPlayerScreen({ route, navigation }) {
             console.error('[VideoPlayer] Vidfast also failed:', vidfastError);
             // Let it fall through to error handling
           }
+          
+          // Third fallback: If Vidfast failed for episodes, try with season "01"
+          if ((!result || !result.streamUrl) && episode && season && episodeNumber && currentSource === 'vidfast') {
+            console.log(`[VideoPlayer] Vidfast failed, trying with season "01" (original: S${season}E${episodeNumber})...`);
+            try {
+              result = await service.fetchEpisodeWithSubtitles(tmdbId, '01', episodeNumber, selectedServerName);
+              console.log('[VideoPlayer] Vidfast with S01 result:', result ? (result.streamUrl ? 'Success' : 'No stream URL') : 'Failed');
+            } catch (s01Error) {
+              console.error('[VideoPlayer] Vidfast with S01 also failed:', s01Error);
+              result = null;
+            }
+          }
+        }
+
+        // Final fallback: Try Videasy if everything else failed
+        if ((!result || !result.streamUrl) && currentSource !== 'videasy') {
+          const videasyFallback = await attemptVideasyFallback();
+          if (videasyFallback) {
+            result = videasyFallback;
+          }
         }
 
         if (result && result.streamUrl) {
@@ -1564,8 +1792,21 @@ export default function VideoPlayerScreen({ route, navigation }) {
           const sortedTracks = sortSubtitleTracksByPriority(tracks);
           setSubtitleTracks(sortedTracks);
           
-          // Extract audio tracks from M3U8 playlist if it's an HLS stream
-          if (result.streamUrl.includes('.m3u8') || result.streamUrl.includes('/playlist/')) {
+          // Auto-enable English embedded subtitle or fetch from OpenSubtitles
+          autoEnableSubtitles(sortedTracks);
+          
+          // Handle audio tracks returned by source
+          if (result.audioTracks && result.audioTracks.length > 0) {
+            console.log('[VideoPlayerScreen] Found audio tracks from source:', result.audioTracks.length);
+            setAudioTracks(result.audioTracks);
+            // Set default audio track
+            if (result.defaultAudioTrack) {
+              setSelectedAudioTrack(result.defaultAudioTrack);
+            } else if (result.audioTracks.length > 0) {
+              setSelectedAudioTrack(result.audioTracks[0]);
+            }
+          } else if (result.streamUrl.includes('.m3u8') || result.streamUrl.includes('/playlist/')) {
+            // Extract audio tracks from M3U8 playlist if it's an HLS stream
             try {
               console.log('[VideoPlayerScreen] Extracting audio tracks from M3U8 playlist:', result.streamUrl);
               const headers = {
@@ -1682,6 +1923,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
       setCurrentSubtitleText('');
     }
   }, [position, selectedSubtitleTrack, subtitleDelay]);
+
 
   // Handle playback progress updates using interval (expo-video doesn't have onProgressUpdate with detailed info)
   useEffect(() => {
@@ -1870,10 +2112,6 @@ export default function VideoPlayerScreen({ route, navigation }) {
     })
   ).current;
 
-  const skip85 = () => {
-    resetControlsTimer();
-    seek(85);
-  };
 
   const changePlaybackRate = async (rate, shouldCollapse = true) => {
     resetControlsTimer();
@@ -1964,12 +2202,106 @@ export default function VideoPlayerScreen({ route, navigation }) {
     resetControlsTimer();
   };
 
-  const selectAudioTrack = (track) => {
+  const toggleEpisodeListModal = () => {
+    resetControlsTimer();
+    
+    if (!showEpisodeListModal) {
+      // Opening modal - show immediately, fetch data in background
+      setShowEpisodeListModal(true);
+      setSelectedSeasonForList(season || 1);
+      
+      // Fetch data after modal is shown
+      fetchSeasonsAndEpisodes();
+    } else {
+      // Closing modal
+      setShowEpisodeListModal(false);
+    }
+    
+    // Hide other modals
+    setIsSpeedExpanded(false);
+    if (isSubtitleExpanded) {
+      setIsSubtitleExpanded(false);
+    }
+    if (isServerExpanded) {
+      setIsServerExpanded(false);
+    }
+    if (showSubtitleSettingsModal) {
+      setShowSubtitleSettingsModal(false);
+    }
+    if (showAudioSettingsModal) {
+      setShowAudioSettingsModal(false);
+    }
+    if (showServerSettingsModal) {
+      setShowServerSettingsModal(false);
+    }
+    // Hide controls when episode list modal is shown
+    setShowControls(false);
+  };
+
+  const closeEpisodeListModal = () => {
+    setShowEpisodeListModal(false);
+  };
+
+  const fetchSeasonsAndEpisodes = async () => {
+    if (!item || !item.id) return;
+    
+    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+    if (mediaType !== 'tv') return;
+    
+    setLoadingEpisodes(true);
+    try {
+      // Fetch TV details to get seasons
+      const tvDetails = await TMDBService.fetchTVDetails(item.id);
+      if (tvDetails && tvDetails.seasons) {
+        const validSeasons = tvDetails.seasons.filter(s => s.season_number >= 0);
+        setSeasons(validSeasons);
+        
+        // Fetch episodes for all seasons (or at least current season)
+        const episodesData = {};
+        const seasonsToFetch = validSeasons.map(s => s.season_number);
+        
+        for (const seasonNum of seasonsToFetch) {
+          try {
+            const episodes = await TMDBService.fetchTVEpisodes(item.id, seasonNum);
+            episodesData[seasonNum] = episodes;
+          } catch (error) {
+            console.error(`Error fetching episodes for season ${seasonNum}:`, error);
+            episodesData[seasonNum] = [];
+          }
+        }
+        
+        setEpisodesBySeason(episodesData);
+      }
+    } catch (error) {
+      console.error('Error fetching seasons and episodes:', error);
+    } finally {
+      setLoadingEpisodes(false);
+    }
+  };
+
+  const handleEpisodeSelect = async (selectedEpisode, selectedSeasonNum) => {
+    if (!item) return;
+    
+    try {
+      // Close modal first
+      closeEpisodeListModal();
+      
+      // Navigate to selected episode
+      navigation.replace('VideoPlayer', {
+        item,
+        episode: selectedEpisode,
+        season: selectedSeasonNum,
+        episodeNumber: selectedEpisode.episode_number,
+        resumePosition: null, // Start from beginning
+      });
+    } catch (error) {
+      console.error('Error switching episode:', error);
+    }
+  };
+
+  const selectAudioTrack = async (track) => {
     resetControlsTimer();
     setSelectedAudioTrack(track);
-    // Note: expo-video doesn't have a direct API for selecting audio tracks
-    // Audio track selection is typically handled at the HLS playlist level
-    // For now, we'll just update the UI state
     console.log('[VideoPlayerScreen] Selected audio track:', track);
   };
 
@@ -2035,9 +2367,17 @@ export default function VideoPlayerScreen({ route, navigation }) {
     setIsSubtitleSearchMode(true);
     // Initialize search query with current movie/episode title
     // For episodes, try just the show title first (episode names can be too specific)
-    const searchTitle = episode 
+    let searchTitle = episode 
       ? (item?.title || item?.name || '').trim()
       : (item?.title || item?.name || '').trim();
+    
+    // Add season and episode format if available
+    if (season !== null && season !== undefined && episodeNumber !== null && episodeNumber !== undefined) {
+      const seasonStr = String(season).padStart(2, '0');
+      const episodeStr = String(episodeNumber).padStart(2, '0');
+      searchTitle = `${searchTitle} S${seasonStr}E${episodeStr}`;
+    }
+    
     setSubtitleSearchQuery(searchTitle);
     // Auto-search if we have a title
     if (searchTitle) {
@@ -2096,6 +2436,177 @@ export default function VideoPlayerScreen({ route, navigation }) {
     setIsDelayMode(false);
   };
 
+  // Auto-enable English embedded subtitle or fetch from OpenSubtitles
+  const autoEnableSubtitles = async (tracks) => {
+    try {
+      console.log('[Auto-Subtitle] Starting auto-enable, tracks:', tracks?.length, 'selectedTrack:', selectedSubtitleTrack);
+      
+      // Skip if already attempted for this video
+      if (autoSubtitleAttemptedRef.current) {
+        console.log('[Auto-Subtitle] Already attempted, skipping');
+        return;
+      }
+
+      // Check if there's already a selected subtitle track (user preference) - but only if it's not 'none'
+      // Don't skip if it's null or 'none' - we want to auto-enable
+      if (selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none') {
+        console.log('[Auto-Subtitle] Subtitle already selected by user:', selectedSubtitleTrack.name, 'skipping auto-enable');
+        autoSubtitleAttemptedRef.current = true;
+        return;
+      }
+
+      // Mark as attempted immediately to prevent duplicate calls
+      autoSubtitleAttemptedRef.current = true;
+
+      if (!tracks || tracks.length === 0) {
+        console.log('[Auto-Subtitle] No tracks available');
+        return;
+      }
+
+      // Filter out 'none' option for checking
+      const availableTracks = tracks.filter(track => track.id !== 'none');
+      console.log('[Auto-Subtitle] Checking', availableTracks.length, `available tracks (excluding "Off") for ${preferredLanguage} subtitles`);
+
+      // If no tracks except 'none', still try to fetch from OpenSubtitles
+      if (availableTracks.length === 0) {
+        console.log('[Auto-Subtitle] No embedded subtitle tracks found, will try OpenSubtitles');
+      }
+
+      // Helper function to check if track matches preferred language
+      const matchesPreferredLanguage = (track) => {
+        const lang = (track.language || '').toLowerCase().trim();
+        const name = (track.name || '').toLowerCase().trim();
+        
+        // Get preferred language name from LANGUAGE_CODES if available
+        const preferredLangName = LANGUAGE_CODES[preferredLanguage]?.toLowerCase() || preferredLanguage.toLowerCase();
+        
+        // Check for preferred language in various formats
+        return lang === preferredLanguage.toLowerCase() ||
+               lang === preferredLanguage.substring(0, 2).toLowerCase() ||
+               lang === preferredLangName ||
+               lang.startsWith(preferredLanguage.substring(0, 2).toLowerCase()) ||
+               lang.match(new RegExp(`\\b(${preferredLangName}|${preferredLanguage})\\b`, 'i')) ||
+               name.includes(preferredLangName) ||
+               name.includes(preferredLanguage.toLowerCase()) ||
+               name.match(new RegExp(`\\b(${preferredLangName}|${preferredLanguage})\\b`, 'i'));
+      };
+
+      // Find preferred language embedded subtitle (exclude 'none' and online subtitles)
+      const preferredTrack = availableTracks.find(track => {
+        // Check if it's an embedded subtitle (has URL) or has content
+        const isEmbedded = track.url || track.content;
+        if (!isEmbedded) {
+          console.log('[Auto-Subtitle] Track', track.name, 'is not embedded (no URL or content)');
+          return false;
+        }
+        
+        // Check language field
+        const lang = (track.language || '').toLowerCase().trim();
+        const name = (track.name || '').toLowerCase().trim();
+        
+        console.log('[Auto-Subtitle] Checking track:', name, 'lang:', lang, 'against preferred:', preferredLanguage);
+        
+        return matchesPreferredLanguage(track);
+      });
+
+      if (preferredTrack) {
+        // Auto-enable preferred language embedded subtitle
+        console.log('[Auto-Subtitle] Auto-enabling', preferredLanguage, 'embedded subtitle:', preferredTrack.name);
+        await selectSubtitleTrack(preferredTrack);
+        return;
+      }
+
+      // No preferred language embedded subtitle found, fetch from OpenSubtitles
+      console.log(`[Auto-Subtitle] No ${preferredLanguage} embedded subtitle found, fetching from OpenSubtitles...`);
+      
+      // Build search query
+      let searchTitle = episode 
+        ? (item?.title || item?.name || '').trim()
+        : (item?.title || item?.name || '').trim();
+      
+      // Add season and episode format if available
+      if (season !== null && season !== undefined && episodeNumber !== null && episodeNumber !== undefined) {
+        const seasonStr = String(season).padStart(2, '0');
+        const episodeStr = String(episodeNumber).padStart(2, '0');
+        searchTitle = `${searchTitle} S${seasonStr}E${episodeStr}`;
+      }
+
+      console.log('[Auto-Subtitle] Search title:', searchTitle, 'item:', item?.title || item?.name);
+
+      if (!searchTitle) {
+        console.log('[Auto-Subtitle] No search title available, skipping auto-fetch');
+        return;
+      }
+
+      // Get IMDb ID if available
+      const imdbId = item?.imdb_id || item?.external_ids?.imdb_id || null;
+      console.log('[Auto-Subtitle] Searching OpenSubtitles with:', { searchTitle: searchTitle.trim(), language: preferredLanguage, imdbId });
+      
+      // Search for preferred language subtitles
+      const results = await OpenSubtitlesService.searchSubtitles(
+        searchTitle.trim(),
+        preferredLanguage, // Preferred language
+        imdbId
+      );
+
+      console.log('[Auto-Subtitle] OpenSubtitles search results:', results?.length || 0, 'subtitles found');
+
+              if (results && results.length > 0) {
+                // Get the top result (first one)
+                const topResult = results[0];
+                console.log(`[Auto-Subtitle] Auto-fetching top ${preferredLanguage} subtitle:`, topResult.name || topResult.id);
+        
+        try {
+          // Download and apply the subtitle
+          const fileContent = await OpenSubtitlesService.downloadSubtitle(topResult.fileId);
+          
+          if (fileContent) {
+            // Parse the subtitle file
+            const cues = parseSRT(fileContent);
+            subtitleCuesRef.current = cues;
+            console.log('[Auto-Subtitle] Auto-loaded', cues.length, 'subtitle cues from OpenSubtitles');
+            
+            // Create a track object for the subtitle
+            const newTrack = {
+              id: topResult.id,
+              name: `${topResult.languageName || topResult.language} - ${topResult.release || 'Auto-fetched'}`,
+              language: topResult.language,
+              url: null,
+              content: fileContent,
+            };
+            
+            // Add the new track to subtitle tracks list
+            setSubtitleTracks((prevTracks) => {
+              const existingIndex = prevTracks.findIndex(t => t.id === newTrack.id);
+              if (existingIndex >= 0) {
+                const updatedTracks = [...prevTracks];
+                updatedTracks[existingIndex] = newTrack;
+                return sortSubtitleTracksByPriority(updatedTracks);
+              } else {
+                return sortSubtitleTracksByPriority([...prevTracks, newTrack]);
+              }
+            });
+            
+            // Set the new track as selected
+            setSelectedSubtitleTrack(newTrack);
+            console.log('[Auto-Subtitle] Auto-enabled subtitle:', newTrack.name);
+          } else {
+            console.log('[Auto-Subtitle] Failed to download subtitle file content');
+          }
+        } catch (downloadError) {
+          console.error('[Auto-Subtitle] Error downloading subtitle:', downloadError);
+        }
+      } else {
+        console.log(`[Auto-Subtitle] No ${preferredLanguage} subtitles found on OpenSubtitles`);
+      }
+    } catch (error) {
+      console.error('[Auto-Subtitle] Error in auto-enable subtitles:', error);
+      // Reset attempt flag on error so it can retry if needed
+      autoSubtitleAttemptedRef.current = false;
+      // Silently fail - don't show error to user for auto-feature
+    }
+  };
+
   const searchSubtitles = async () => {
     if (!subtitleSearchQuery.trim()) {
       return;
@@ -2105,14 +2616,22 @@ export default function VideoPlayerScreen({ route, navigation }) {
     setSubtitleSearchResults([]);
 
     try {
-      console.log('Searching subtitles:', subtitleSearchQuery.trim(), 'Language:', subtitleSearchLanguage);
+      // Build search query with season and episode if available
+      let searchQuery = subtitleSearchQuery.trim();
+      if (season !== null && season !== undefined && episodeNumber !== null && episodeNumber !== undefined) {
+        const seasonStr = String(season).padStart(2, '0');
+        const episodeStr = String(episodeNumber).padStart(2, '0');
+        searchQuery = `${searchQuery} S${seasonStr}E${episodeStr}`;
+      }
+      
+      console.log('Searching subtitles:', searchQuery, 'Language:', subtitleSearchLanguage);
       
       // Get IMDb ID if available
       const imdbId = item?.imdb_id || item?.external_ids?.imdb_id || null;
       console.log('Using IMDb ID:', imdbId);
       
       const results = await OpenSubtitlesService.searchSubtitles(
-        subtitleSearchQuery.trim(),
+        searchQuery,
         subtitleSearchLanguage,
         imdbId
       );
@@ -2514,7 +3033,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
     }
   };
 
-  // Handle double tap to zoom/reset
+  // Handle double tap to seek left/right
   const handleDoubleTap = (evt) => {
     const now = Date.now();
     if (now - lastTapTime.current < 300) {
@@ -2526,9 +3045,16 @@ export default function VideoPlayerScreen({ route, navigation }) {
       // Get tap location
       const touch = evt?.nativeEvent?.touches?.[0] || evt?.nativeEvent;
       const tapX = touch?.pageX || SCREEN_WIDTH / 2;
-      const tapY = touch?.pageY || SCREEN_HEIGHT / 2;
       
-      zoomToPoint(tapX, tapY, 2);
+      // Determine if tap was on left or right half of screen
+      if (tapX < SCREEN_WIDTH / 2) {
+        // Left half - seek backward 5 seconds
+        seek(-5);
+      } else {
+        // Right half - seek forward 5 seconds
+        seek(5);
+      }
+      
       lastTapTime.current = 0;
     } else {
       // Single tap - wait to see if it's a double tap
@@ -2664,8 +3190,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   // Calculate estimated time to finish (remaining time)
   const getEstimatedTimeToFinish = () => {
-    if (duration > 0 && position > 0) {
-      const remaining = duration - position;
+    if (duration > 0) {
+      const remaining = Math.max(0, duration - position);
       return formatTime(remaining);
     }
     return '--:--';
@@ -2714,11 +3240,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
     const genreIds = item.genre_ids || [];
     const hasAnimationGenre = genreIds.includes(16); // 16 = Animation
     const isJapanese = item.original_language === 'ja' || item.original_language === 'jp';
-    return hasAnimationGenre || isJapanese;
+    // Also check if name/title contains "anime" keyword
+    const titleLower = (item.title || item.name || '').toLowerCase();
+    const hasAnimeKeyword = titleLower.includes('anime');
+    return hasAnimationGenre || isJapanese || hasAnimeKeyword;
   };
-
-  // Show skip 85s only for TV shows that are anime
-  const showSkip85 = episode && isAnime();
 
   const displayTitle = episode 
     ? `S${season}E${episodeNumber}: ${episode.name || 'Episode'}`
@@ -2862,9 +3388,61 @@ export default function VideoPlayerScreen({ route, navigation }) {
                     }
                 }
               }}
-              onError={(error) => {
+              onError={async (error) => {
                 console.error('Video error:', error);
-                setError('Video playback error');
+                console.error('Error details:', JSON.stringify(error, null, 2));
+                console.error('Player status:', player?.status);
+                console.error('Player duration:', player?.duration);
+                
+                if (videoSource === 'videasy' && !videasyRetryRef.current) {
+                  console.log('[VideoPlayer] Videasy stream failed, attempting preferred source fallback...');
+                  videasyRetryRef.current = true;
+                  setVideasyFailed(true);
+                  
+                  try {
+                    const preferredSource = await StorageService.getVideoSource();
+                    const fallbackService =
+                      preferredSource === 'n3tflix'
+                        ? N3tflixService
+                        : preferredSource === 'vidfast'
+                        ? VidfastService
+                        : preferredSource === 'videasy'
+                        ? VixsrcService
+                        : VixsrcService;
+                    
+                    let fallbackResult = null;
+                    if (episode && season && episodeNumber) {
+                      fallbackResult = await fallbackService.fetchEpisodeWithSubtitles(tmdbId, season, episodeNumber, selectedServerName);
+                    } else {
+                      fallbackResult = await fallbackService.fetchMovieWithSubtitles(tmdbId, selectedServerName);
+                    }
+                    
+                    if (fallbackResult && fallbackResult.streamUrl) {
+                      console.log('[VideoPlayer] Preferred source fallback succeeded, switching stream...');
+                      setStreamUrl(fallbackResult.streamUrl);
+                      setVideoSource(preferredSource === 'videasy' ? 'vixsrc' : preferredSource);
+                      
+                      const tracks = [
+                        { id: 'none', name: 'Off', language: null, url: null },
+                        ...(fallbackResult.subtitles || []),
+                      ];
+                      const sortedTracks = sortSubtitleTracksByPriority(tracks);
+                      setSubtitleTracks(sortedTracks);
+                      autoEnableSubtitles(sortedTracks);
+                      return;
+                    }
+                  } catch (videasyFallbackError) {
+                    console.error('[VideoPlayer] Preferred source fallback after Videasy error failed:', videasyFallbackError);
+                  }
+                }
+                
+                // Check if this is an Android-specific error
+                if (Platform.OS === 'android') {
+                  console.error('Android video loading error - this may be due to missing headers required by the streaming server');
+                  console.error('expo-video does not support custom HTTP headers, which some streaming services require');
+                }
+                
+                setError('Video playback error. The stream may require headers that are not supported on this platform.');
               }}
               />
               </Animated.View>
@@ -2917,7 +3495,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
               const timeSinceLastTap = now - lastTapTime.current;
               
               if (timeSinceLastTap < 300) {
-                // Double tap - handle zoom
+                // Double tap - seek left/right
                 handleDoubleTap(evt);
               } else {
                 // Single tap - toggle controls (unless zoomed and panning)
@@ -2928,9 +3506,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
               
               lastTapTime.current = now;
             }}
-            disabled={showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal}
+            disabled={showSubtitleSettingsModal || showAudioSettingsModal || showServerSettingsModal || showEpisodeListModal}
           >
-            {!isControlsLocked && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && (
+            {!isControlsLocked && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && !showEpisodeListModal && (
               <>
                 {/* Top Bar */}
                 <Animated.View 
@@ -3025,7 +3603,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                 </Animated.View>
 
                 {/* Center Controls */}
-                {!showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && (
+                {!showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && !showEpisodeListModal && (
                 <Animated.View 
                   style={[
                     styles.centerControls,
@@ -3051,7 +3629,7 @@ export default function VideoPlayerScreen({ route, navigation }) {
                     onLongPress={() => seek(-30)}
                   >
                     <BlurView intensity={80} tint="dark" style={styles.seekButtonBlur}>
-                      <Ionicons name="play-back" size={30} color="#fff" />
+                      <RewindIcon size={30} color="#fff" />
                     </BlurView>
                   </TouchableOpacity>
 
@@ -3074,14 +3652,15 @@ export default function VideoPlayerScreen({ route, navigation }) {
                     onLongPress={() => seek(30)}
                   >
                     <BlurView intensity={80} tint="dark" style={styles.seekButtonBlur}>
-                      <Ionicons name="play-forward" size={30} color="#fff" />
+                      <FastForwardIcon size={30} color="#fff" />
                     </BlurView>
                   </TouchableOpacity>
                 </Animated.View>
                 )}
 
+
                 {/* Bottom Controls */}
-                {!showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && (
+                {!showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && !showEpisodeListModal && (
                 <Animated.View 
                   style={[
                     styles.bottomControls,
@@ -3092,18 +3671,6 @@ export default function VideoPlayerScreen({ route, navigation }) {
                   ]}
                   pointerEvents={showControls ? 'auto' : 'none'}
                 >
-                  {/* Skip 85s Button - Only for anime TV shows */}
-                  {showSkip85 && (
-                    <TouchableOpacity
-                      style={styles.skipButton}
-                      onPress={skip85}
-                    >
-                      <BlurView intensity={80} tint="dark" style={styles.skipButtonBlur}>
-                        <Ionicons name="play-forward" size={16} color="#fff" />
-                        <Text style={styles.skipButtonText}>Skip 85s</Text>
-                      </BlurView>
-                    </TouchableOpacity>
-                  )}
 
                   {/* Control Buttons Row - Above Slider */}
                   <View style={styles.controlButtonsRow}>
@@ -3201,6 +3768,27 @@ export default function VideoPlayerScreen({ route, navigation }) {
                           
                           <View style={styles.controlPillDivider} />
                           
+                          {/* Episode List Button - Only for TV shows */}
+                          {(() => {
+                            const mediaType = item?.media_type || (item?.title ? 'movie' : 'tv');
+                            if (mediaType === 'tv') {
+                              return (
+                                <>
+                                  <TouchableOpacity
+                                    style={styles.controlPillButton}
+                                    onPress={toggleEpisodeListModal}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Ionicons name="tv" size={18} color="#fff" />
+                                  </TouchableOpacity>
+                                  
+                                  <View style={styles.controlPillDivider} />
+                                </>
+                              );
+                            }
+                            return null;
+                          })()}
+                          
                           {/* Subtitle Button */}
                             <TouchableOpacity
                             style={styles.controlPillButton}
@@ -3234,11 +3822,30 @@ export default function VideoPlayerScreen({ route, navigation }) {
                         </BlurView>
                       </View>
                     )}
+
+                    {/* Next Episode Button - Circular, next to orientation button, outside pill */}
+                    {(() => {
+                      const mediaType = item?.media_type || (item?.title ? 'movie' : 'tv');
+                      if (mediaType === 'tv' && nextEpisode && showControls && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && !showEpisodeListModal) {
+                        return (
+                          <TouchableOpacity
+                            style={styles.nextEpisodeCircularButton}
+                            onPress={playNextEpisode}
+                            activeOpacity={0.7}
+                          >
+                            <BlurView intensity={80} tint="dark" style={styles.nextEpisodeCircularButtonBlur}>
+                              <Ionicons name="play-forward" size={20} color="#fff" />
+                            </BlurView>
+                          </TouchableOpacity>
+                        );
+                      }
+                      return null;
+                    })()}
                   </View>
 
                   {/* Progress Slider - iOS Native Style */}
                   <View style={styles.progressContainer}>
-                    <Text style={styles.timeText}>{getCurrentTime()}</Text>
+                    <Text style={styles.timeText}>{formatTime(position)}</Text>
                     <View
                       style={styles.sliderWrapper}
                       onLayout={(event) => {
@@ -3278,7 +3885,12 @@ export default function VideoPlayerScreen({ route, navigation }) {
                         />
                       </Animated.View>
                     </View>
-                    <Text style={styles.timeText}>{getFinishTime()}</Text>
+                    <Text style={styles.timeText}>
+                      {(() => {
+                        const remaining = getEstimatedTimeToFinish();
+                        return remaining === '--:--' ? '--:--' : `-${remaining}`;
+                      })()}
+                    </Text>
                   </View>
 
                   {/* Info Section */}
@@ -4332,9 +4944,182 @@ export default function VideoPlayerScreen({ route, navigation }) {
         </Animated.View>
       )}
 
+      {/* Episode List Modal */}
+      {showEpisodeListModal && (
+        <Animated.View
+          style={[
+            styles.subtitleSettingsModalOverlay,
+            {
+              opacity: episodeListModalOpacity,
+            }
+          ]}
+          pointerEvents="auto"
+        >
+          <TouchableOpacity
+            style={styles.subtitleSettingsModalBackdrop}
+            activeOpacity={1}
+            onPress={closeEpisodeListModal}
+          />
+          <Animated.View
+            style={[
+              styles.subtitleSettingsModalContent,
+              {
+                transform: [{ scale: episodeListModalScale }],
+              }
+            ]}
+            pointerEvents="auto"
+          >
+            {/* Close Button */}
+            <TouchableOpacity
+              style={styles.subtitleSettingsCloseButton}
+              onPress={closeEpisodeListModal}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close" size={28} color="#fff" />
+            </TouchableOpacity>
+
+            {/* Title */}
+            <View style={styles.subtitleSettingsTitleContainer}>
+              <Text style={styles.subtitleSettingsTitle}>Episodes</Text>
+            </View>
+
+            {/* Season Selector */}
+            {seasons.length > 0 && (
+              <View style={styles.seasonSelectorContainer}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.seasonSelectorScrollContent}
+                >
+                  {seasons.map((seasonItem) => (
+                    <TouchableOpacity
+                      key={seasonItem.season_number}
+                      style={[
+                        styles.seasonButton,
+                        selectedSeasonForList === seasonItem.season_number && styles.seasonButtonActive,
+                      ]}
+                      onPress={() => setSelectedSeasonForList(seasonItem.season_number)}
+                      activeOpacity={0.7}
+                    >
+                      <Text
+                        style={[
+                          styles.seasonButtonText,
+                          selectedSeasonForList === seasonItem.season_number && styles.seasonButtonTextActive,
+                        ]}
+                      >
+                        {seasonItem.season_number === 0 ? 'Specials' : `Season ${seasonItem.season_number}`}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
+            {/* Episodes List */}
+            <ScrollView
+              style={styles.subtitleSettingsScrollView}
+              contentContainerStyle={styles.subtitleSettingsScrollContent}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled={true}
+            >
+              {loadingEpisodes || (selectedSeasonForList !== null && !episodesBySeason[selectedSeasonForList]) ? (
+                <View style={styles.episodeListLoadingContainer}>
+                  <ActivityIndicator size="large" color="#fff" />
+                  <Text style={styles.episodeListLoadingText}>Loading episodes...</Text>
+                </View>
+              ) : selectedSeasonForList !== null && episodesBySeason[selectedSeasonForList]?.length > 0 ? (
+                <View style={styles.episodeListContainer}>
+                  {episodesBySeason[selectedSeasonForList].map((episodeItem) => {
+                    const isCurrentEpisode = episode?.id === episodeItem.id || 
+                                           (season === selectedSeasonForList && episodeNumber === episodeItem.episode_number);
+                    return (
+                      <TouchableOpacity
+                        key={`${selectedSeasonForList}-${episodeItem.episode_number}`}
+                        style={[
+                          styles.episodeItem,
+                          isCurrentEpisode && styles.episodeItemActive,
+                        ]}
+                        onPress={() => handleEpisodeSelect(episodeItem, selectedSeasonForList)}
+                        activeOpacity={0.7}
+                      >
+                        {/* Episode Thumbnail */}
+                        <View style={styles.episodeThumbnailContainer}>
+                          {(() => {
+                            const thumbnailUri = episodeItem.still_path
+                              ? TMDBService.getStillURL(episodeItem.still_path, 'w300')
+                              : item?.backdrop_path
+                              ? TMDBService.getBackdropURL(item.backdrop_path, 'w300')
+                              : null;
+                            
+                            if (thumbnailUri) {
+                              return (
+                                <CachedImage
+                                  source={{ uri: thumbnailUri }}
+                                  style={styles.episodeThumbnail}
+                                  resizeMode="cover"
+                                />
+                              );
+                            } else {
+                              return (
+                                <View style={[styles.episodeThumbnail, styles.episodeThumbnailPlaceholder]}>
+                                  <Ionicons name="tv-outline" size={40} color="rgba(255, 255, 255, 0.3)" />
+                                </View>
+                              );
+                            }
+                          })()}
+                          {isCurrentEpisode && (
+                            <View style={styles.episodeCurrentBadge}>
+                              <Ionicons name="play-circle" size={20} color="#fff" />
+                            </View>
+                          )}
+                        </View>
+
+                        {/* Episode Info */}
+                        <View style={styles.episodeInfoContainer}>
+                          <View style={styles.episodeHeader}>
+                            <Text style={styles.episodeNumber}>
+                              Episode {episodeItem.episode_number}
+                            </Text>
+                            {episodeItem.air_date && (
+                              <Text style={styles.episodeAirDate}>
+                                {new Date(episodeItem.air_date).getFullYear()}
+                              </Text>
+                            )}
+                          </View>
+                          <Text
+                            style={[
+                              styles.episodeTitle,
+                              isCurrentEpisode && styles.episodeTitleActive,
+                            ]}
+                            numberOfLines={2}
+                          >
+                            {episodeItem.name || `Episode ${episodeItem.episode_number}`}
+                          </Text>
+                          {episodeItem.overview && (
+                            <Text style={styles.episodeDescription} numberOfLines={3}>
+                              {episodeItem.overview}
+                            </Text>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : (
+                <View style={styles.subtitleSettingsEmptyState}>
+                  <Text style={styles.subtitleSettingsEmptyText}>
+                    {selectedSeasonForList === null ? 'Select a season' : 'No episodes available'}
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          </Animated.View>
+        </Animated.View>
+      )}
+
       {/* Subtitle Overlay - Positioned above bottom controls, moves up when controls appear */}
       {/* Hide subtitles when subtitle settings modal is open */}
-      {currentSubtitleText && selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && (
+      {currentSubtitleText && selectedSubtitleTrack && selectedSubtitleTrack.id !== 'none' && !showSubtitleSettingsModal && !showAudioSettingsModal && !showServerSettingsModal && !showEpisodeListModal && (
         <Animated.View 
           style={[
                 styles.subtitleOverlay,
@@ -4637,6 +5422,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     overflow: 'hidden',
   },
+  nextEpisodeCircularButton: {
+    width: 42,
+    height: 42,
+    marginLeft: 8,
+    alignSelf: 'center',
+  },
+  nextEpisodeCircularButtonBlur: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 21,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
   bottomControls: {
     position: 'absolute',
     bottom: 0,
@@ -4645,24 +5444,6 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     paddingHorizontal: 16,
     zIndex: 10, // Higher z-index than subtitles
-  },
-  skipButton: {
-    marginBottom: 12,
-    alignSelf: 'flex-start',
-  },
-  skipButtonBlur: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 21,
-    overflow: 'hidden',
-  },
-  skipButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: 'bold',
-    marginLeft: 8,
   },
   progressContainer: {
     flexDirection: 'row',
@@ -5113,6 +5894,121 @@ const styles = StyleSheet.create({
   subtitleSettingsEmptyText: {
     color: 'rgba(255, 255, 255, 0.5)',
     fontSize: 14,
+  },
+  // Episode List Modal Styles
+  seasonSelectorContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  seasonSelectorScrollContent: {
+    paddingRight: 20,
+  },
+  seasonButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    marginRight: 10,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  seasonButtonActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderColor: '#fff',
+  },
+  seasonButtonText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  seasonButtonTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  episodeListLoadingContainer: {
+    paddingVertical: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  episodeListLoadingText: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 14,
+    marginTop: 12,
+  },
+  episodeListContainer: {
+    paddingTop: 10,
+  },
+  episodeItem: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  episodeItemActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  episodeThumbnailContainer: {
+    width: 120,
+    height: 68,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginRight: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    position: 'relative',
+  },
+  episodeThumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  episodeThumbnailPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  episodeCurrentBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 12,
+    padding: 4,
+  },
+  episodeInfoContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  episodeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  episodeNumber: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 12,
+    fontWeight: '500',
+    marginRight: 8,
+  },
+  episodeAirDate: {
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 12,
+  },
+  episodeTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  episodeTitleActive: {
+    color: '#4CAF50',
+  },
+  episodeDescription: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 13,
+    lineHeight: 18,
   },
   subtitleLanguageGroup: {
     marginBottom: 4,

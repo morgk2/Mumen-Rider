@@ -141,6 +141,33 @@ export default function VideoSourceSettingsScreen({ navigation }) {
                 </View>
               </View>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.sourceOption,
+                videoSource === 'videasy' && styles.sourceOptionActive
+              ]}
+              onPress={() => handleVideoSourceChange('videasy')}
+            >
+              <View style={styles.sourceOptionContent}>
+                <Ionicons
+                  name={videoSource === 'videasy' ? 'radio-button-on' : 'radio-button-off'}
+                  size={24}
+                  color={videoSource === 'videasy' ? '#4CAF50' : 'rgba(255, 255, 255, 0.5)'}
+                />
+                <View style={styles.sourceOptionText}>
+                  <Text style={[
+                    styles.sourceOptionTitle,
+                    videoSource === 'videasy' && styles.sourceOptionTitleActive
+                  ]}>
+                    Videasy
+                  </Text>
+                  <Text style={styles.sourceOptionDescription}>
+                    Direct-link source (works for anime)
+                  </Text>
+                </View>
+              </View>
+            </TouchableOpacity>
           </View>
         </View>
       </ScrollView>

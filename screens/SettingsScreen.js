@@ -82,6 +82,11 @@ export default function SettingsScreen({ navigation }) {
             </TouchableOpacity>
           ))}
         </View>
+
+        {/* App Version */}
+        <View style={styles.versionContainer}>
+          <Text style={styles.versionText}>Version 1.0.0</Text>
+        </View>
       </ScrollView>
     </View>
   );
@@ -159,6 +164,17 @@ const styles = StyleSheet.create({
   settingItemDescription: {
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.6)',
+  },
+  versionContainer: {
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  versionText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '500',
   },
 });
 
