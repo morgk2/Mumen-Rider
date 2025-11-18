@@ -1444,35 +1444,6 @@ export default function MovieDetailsScreen({ route, navigation }) {
               </Text>
             </TouchableOpacity>
 
-            {/* Download Button - Only show for movies */}
-            {isMovie ? (
-              <TouchableOpacity
-                style={[
-                  styles.downloadButton,
-                  { marginLeft: 12 },
-                  isDownloaded && styles.downloadButtonActive,
-                  isDownloading && styles.downloadButtonDownloading,
-                ]}
-                onPress={handleDownload}
-                activeOpacity={0.8}
-                disabled={isDownloading}
-              >
-                {isDownloading ? (
-                  <View style={styles.downloadButtonContent}>
-                    <ActivityIndicator size="small" color="#fff" />
-                    <Text style={styles.downloadButtonText}>
-                      {Math.round(downloadProgress * 100)}%
-                    </Text>
-                  </View>
-                ) : (
-                  <Ionicons
-                    name={isDownloaded ? 'checkmark-circle' : 'download-outline'}
-                    size={24}
-                    color={isDownloaded ? '#000' : '#fff'}
-                  />
-                )}
-              </TouchableOpacity>
-            ) : null}
 
             <TouchableOpacity
               style={[
@@ -1722,10 +1693,6 @@ export default function MovieDetailsScreen({ route, navigation }) {
                         season={selectedSeason}
                         onPress={handleEpisodePress}
                         progress={episodeProgress[episodeNumber] || null}
-                        isDownloaded={downloadStatus.isDownloaded}
-                        isDownloading={downloadStatus.isDownloading}
-                        downloadProgress={downloadStatus.progress}
-                        onDownloadPress={handleEpisodeDownload}
                       />
                     );
                   })}

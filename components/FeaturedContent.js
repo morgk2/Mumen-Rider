@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Accelerometer } from 'expo-sensors';
+import { BlurView } from 'expo-blur';
 import { TMDBService } from '../services/TMDBService';
 import { CachedImage } from './CachedImage';
 
@@ -440,6 +441,32 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
         </View>
       )}
 
+      {/* Logo and Filter Buttons */}
+      <View style={[styles.logoButtonsContainer, { top: insets.top + 60 + 1 }]}>
+        <Image 
+          source={require('../assets/logo.png')} 
+          style={styles.headerLogo}
+          resizeMode="contain"
+        />
+        <View style={styles.buttonsRow}>
+          <TouchableOpacity style={styles.pillButton} activeOpacity={0.7}>
+            <BlurView intensity={80} tint="dark" style={styles.pillButtonBlur}>
+              <Text style={styles.pillButtonText}>Movies</Text>
+            </BlurView>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.pillButton} activeOpacity={0.7}>
+            <BlurView intensity={80} tint="dark" style={styles.pillButtonBlur}>
+              <Text style={styles.pillButtonText}>Shows</Text>
+            </BlurView>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.pillButton} activeOpacity={0.7}>
+            <BlurView intensity={80} tint="dark" style={styles.pillButtonBlur}>
+              <Text style={styles.pillButtonText}>Popular Now</Text>
+            </BlurView>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       {/* Touch Areas for Navigation - Left side for previous, Right side for next */}
       {totalItems > 1 && (
         <>
@@ -761,6 +788,39 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
+  },
+  logoButtonsContainer: {
+    position: 'absolute',
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 15,
+    paddingVertical: 8,
+  },
+  headerLogo: {
+    width: 120,
+    height: 40,
+    marginRight: 12,
+  },
+  buttonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pillButton: {
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  pillButtonBlur: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  },
+  pillButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
   },
 });
 

@@ -439,40 +439,55 @@ export default function EpisodePage({ route, navigation }) {
 
   // Player is configured in context, no need to configure here
 
-  // Save progress periodically (progress is tracked in context)
+  // Save progress periodically in real-time (progress is tracked in context)
   useEffect(() => {
-    if (!player || !item) return;
+    if (!player || !item || !streamUrl) return;
+    
+    let lastSavedPosition = 0;
+    const SAVE_INTERVAL_MS = 5000; // Save every 5 seconds
+    const MIN_POSITION_CHANGE_MS = 10000; // Also save if position changed by at least 10 seconds
+    let lastSaveTime = Date.now();
     
     const interval = setInterval(() => {
-      if (position > 0 && duration > 0 && Math.floor(position / 1000) % 5 === 0) {
-        const progress = {
-          position: position,
-          duration: duration,
-          progress: position / duration,
-        };
+      if (position > 0 && duration > 0) {
+        const currentTime = Date.now();
+        const timeSinceLastSave = currentTime - lastSaveTime;
+        const positionChange = Math.abs(position - lastSavedPosition);
         
-        if (isMovie) {
-          WatchProgressService.saveProgress(
-            item.id,
-            'movie',
-            null,
-            null,
-            progress
-          );
-        } else if (episode) {
-          WatchProgressService.saveProgress(
-            item.id,
-            'tv',
-            season,
-            episodeNumber,
-            progress
-          );
+        // Save every 5 seconds or if position changed significantly (e.g., user seeked)
+        if (timeSinceLastSave >= SAVE_INTERVAL_MS || positionChange >= MIN_POSITION_CHANGE_MS) {
+          const progress = {
+            position: position,
+            duration: duration,
+            progress: position / duration,
+          };
+          
+          if (isMovie) {
+            WatchProgressService.saveProgress(
+              item.id,
+              'movie',
+              null,
+              null,
+              progress
+            );
+          } else if (episode) {
+            WatchProgressService.saveProgress(
+              item.id,
+              'tv',
+              season,
+              episodeNumber,
+              progress
+            );
+          }
+          
+          lastSavedPosition = position;
+          lastSaveTime = currentTime;
         }
       }
-    }, 5000);
+    }, 1000); // Check every second for more responsive saving
     
     return () => clearInterval(interval);
-  }, [player, item, episode, season, episodeNumber, isMovie, position, duration]);
+  }, [player, item, episode, season, episodeNumber, isMovie, position, duration, streamUrl]);
 
   // Fetch TV show details and episodes (only for TV shows)
   useEffect(() => {
@@ -743,11 +758,12 @@ export default function EpisodePage({ route, navigation }) {
       setError(null);
       return () => {
         isScreenActiveRef.current = false;
-        resetPlayerState();
+        // Don't reset player state when navigating to VideoPlayerScreen
+        // Only reset when actually leaving the screen (handled by beforeRemove listener)
         setError(null);
         setLoading(false);
       };
-    }, [resetPlayerState])
+    }, [])
   );
 
   const handleNextEpisode = async () => {

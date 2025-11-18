@@ -235,14 +235,61 @@ export default function App() {
   }, [appIsReady]);
 
   if (!appIsReady) {
-    return null;
+    return <View style={{ flex: 1, backgroundColor: '#000000' }} />;
   }
 
   return (
-    <SafeAreaProvider onLayout={onLayoutRootView}>
-      <VideoPlayerProvider>
-        <NavigationContainer>
-          <StatusBar style="light" />
+    <View style={{ flex: 1, backgroundColor: '#000000' }}>
+      <SafeAreaProvider onLayout={onLayoutRootView}>
+        <VideoPlayerProvider>
+          <NavigationContainer
+            theme={{
+              dark: true,
+              colors: {
+                primary: '#ffffff',
+                background: '#000000',
+                card: '#000000',
+                text: '#ffffff',
+                border: '#333333',
+                notification: '#ffffff',
+              },
+              fonts: {
+                regular: {
+                  fontFamily: Platform.select({
+                    ios: 'System',
+                    android: 'sans-serif',
+                    default: 'System',
+                  }),
+                  fontWeight: '400',
+                },
+                medium: {
+                  fontFamily: Platform.select({
+                    ios: 'System',
+                    android: 'sans-serif-medium',
+                    default: 'System',
+                  }),
+                  fontWeight: '500',
+                },
+                bold: {
+                  fontFamily: Platform.select({
+                    ios: 'System',
+                    android: 'sans-serif',
+                    default: 'System',
+                  }),
+                  fontWeight: '700',
+                },
+                heavy: {
+                  fontFamily: Platform.select({
+                    ios: 'System',
+                    android: 'sans-serif',
+                    default: 'System',
+                  }),
+                  fontWeight: '900',
+                },
+              },
+            }}
+          >
+            <StatusBar style="light" />
         <Tab.Navigator
           screenOptions={{
             headerShown: false,
@@ -340,8 +387,9 @@ export default function App() {
           }}
         />
         </Tab.Navigator>
-      </NavigationContainer>
-      </VideoPlayerProvider>
-    </SafeAreaProvider>
+          </NavigationContainer>
+        </VideoPlayerProvider>
+      </SafeAreaProvider>
+    </View>
   );
 }

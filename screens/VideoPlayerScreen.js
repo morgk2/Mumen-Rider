@@ -129,6 +129,9 @@ export default function VideoPlayerScreen({ route, navigation }) {
   const [uiIsPlaying, setUiIsPlaying] = useState(false);
   const lastPlayerStateRef = useRef(false);
   
+  // Track if we came from EpisodePage to prevent loading overlay when video is already ready
+  const fromEpisodePageRef = useRef(route.params?.fromEpisodePage || false);
+  
   // Poll player state directly for reliable UI updates
   useEffect(() => {
     if (!player) return;
@@ -326,6 +329,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
     fetchLogo();
     if (episode && season && episodeNumber) {
       fetchNextEpisode();
+    }
+    
+    // If coming from EpisodePage, immediately set transitionAnim to 1 for instant visibility
+    if (fromEpisodePageRef.current) {
+      transitionAnim.setValue(1);
     }
   }, []);
 
@@ -802,6 +810,15 @@ export default function VideoPlayerScreen({ route, navigation }) {
   // Lock orientation when screen mounts or comes into focus
   useFocusEffect(
     React.useCallback(() => {
+      // If coming from EpisodePage, immediately set transitionAnim to 1 for instant visibility
+      // Otherwise animate smoothly
+      if (fromEpisodePageRef.current) {
+        transitionAnim.setValue(1);
+        // Also ensure loading is false if video is already ready
+        if (player && streamUrl && (player.status === 'readyToPlay' || player.playing || player.duration > 0)) {
+          setLoading(false);
+        }
+      }
       // Animate to fullscreen when this screen is focused
       animateToFullscreen();
       
@@ -1940,7 +1957,13 @@ export default function VideoPlayerScreen({ route, navigation }) {
         if (player.status === 'readyToPlay' || player.playing) {
           // Progress is tracked in context, just update loading state
           const currentTimeSeconds = player.currentTime || 0;
-          if (loading && currentTimeSeconds >= 1) {
+          // If coming from EpisodePage, set loading to false immediately when video is ready
+          // Otherwise wait for at least 1 second of playback
+          if (fromEpisodePageRef.current) {
+            if (loading && (player.duration > 0 || currentTimeSeconds > 0)) {
+              setLoading(false);
+            }
+          } else if (loading && currentTimeSeconds >= 1) {
             setLoading(false);
           }
 
@@ -3454,7 +3477,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
           </Animated.View>
 
           {/* Loading Overlay with Back Button (when video is loading after playing) */}
-          {loading && streamUrl && (
+          {/* Don't show loading overlay if coming from EpisodePage and video is already ready */}
+          {loading && streamUrl && !(fromEpisodePageRef.current && player && (player.status === 'readyToPlay' || player.playing || player.duration > 0)) && (
             <View style={styles.videoLoadingOverlay}>
               <TouchableOpacity
                 style={[styles.videoLoadingBackButton, { top: insets.top + 16 }]}
