@@ -10,9 +10,11 @@ import {
   Dimensions,
   ActivityIndicator,
   Animated,
+  Modal,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { GestureHandlerRootView, PinchGestureHandler, State } from 'react-native-gesture-handler';
 import { TMDBService } from '../services/TMDBService';
 import { StorageService } from '../services/StorageService';
 import { CacheService } from '../services/CacheService';
@@ -87,7 +89,11 @@ export default function MovieDetailsScreen({ route, navigation }) {
   const [darkenedColor, setDarkenedColor] = useState('#000000'); // Darkened version of dominant color
   const [collection, setCollection] = useState(null); // Store collection data
   const [loadingCollection, setLoadingCollection] = useState(false);
+  const [showPosterModal, setShowPosterModal] = useState(false); // Track poster modal visibility
   const scrollY = useRef(new Animated.Value(0)).current;
+  const scale = useRef(new Animated.Value(1)).current;
+  const baseScale = useRef(1);
+  const pinchRef = useRef();
 
   // Function to darken a color
   const darkenColor = (color, amount = 0.5) => {
@@ -1314,6 +1320,27 @@ export default function MovieDetailsScreen({ route, navigation }) {
     extrapolate: 'clamp',
   });
 
+  // Handle pinch gesture for poster zoom
+  const onPinchGestureEvent = Animated.event(
+    [{ nativeEvent: { scale: scale } }],
+    { useNativeDriver: true }
+  );
+
+  const onPinchHandlerStateChange = (event) => {
+    if (event.nativeEvent.oldState === State.ACTIVE) {
+      baseScale.current *= event.nativeEvent.scale;
+      scale.setValue(1);
+    }
+  };
+
+  const resetZoom = () => {
+    Animated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+    baseScale.current = 1;
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: darkenedColor }]}>
       <Animated.ScrollView
@@ -1386,21 +1413,28 @@ export default function MovieDetailsScreen({ route, navigation }) {
             <View style={styles.titleWithPosterRow}>
               {/* Poster on the left */}
               {posterUrl && (
-                <CachedImage
-                  source={{ uri: posterUrl }}
-                  style={styles.titlePoster}
-                  resizeMode="cover"
-                />
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={() => setShowPosterModal(true)}
+                >
+                  <CachedImage
+                    source={{ uri: posterUrl }}
+                    style={styles.titlePoster}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
               )}
               {/* Logo/Title and Info on the right */}
               <View style={styles.titleLogoContainer}>
                 {/* Logo/Title */}
                 {logoUrl ? (
-                  <CachedImage
-                    source={{ uri: logoUrl }}
-                    style={styles.titleLogo}
-                    resizeMode="contain"
-                  />
+                  <View style={styles.titleLogoWrapper}>
+                    <Image
+                      source={{ uri: logoUrl }}
+                      style={styles.titleLogo}
+                      resizeMode="contain"
+                    />
+                  </View>
                 ) : (
                   !loadingLogo && (
                     <Text style={styles.title}>{displayTitle}</Text>
@@ -1860,6 +1894,57 @@ export default function MovieDetailsScreen({ route, navigation }) {
         item={item}
         onItemAdded={handleItemAddedToCollection}
       />
+
+      {/* Poster Zoom Modal */}
+      <Modal
+        visible={showPosterModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          setShowPosterModal(false);
+          resetZoom();
+        }}
+      >
+        <View style={styles.posterModalContainer}>
+          <GestureHandlerRootView style={styles.posterModalContent}>
+            <PinchGestureHandler
+              ref={pinchRef}
+              onGestureEvent={onPinchGestureEvent}
+              onHandlerStateChange={onPinchHandlerStateChange}
+            >
+              <Animated.View
+                style={[
+                  styles.posterModalImageContainer,
+                  {
+                    transform: [
+                      { scale: Animated.multiply(scale, baseScale.current) }
+                    ],
+                  },
+                ]}
+              >
+                {posterUrl && (
+                  <CachedImage
+                    source={{ uri: posterUrl }}
+                    style={styles.posterModalImage}
+                    resizeMode="contain"
+                  />
+                )}
+              </Animated.View>
+            </PinchGestureHandler>
+          </GestureHandlerRootView>
+          
+          <TouchableOpacity
+            style={styles.posterModalCloseButton}
+            onPress={() => {
+              setShowPosterModal(false);
+              resetZoom();
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1949,10 +2034,16 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 10,
   },
-  titleLogo: {
+  titleLogoWrapper: {
     width: '100%',
     height: 60,
-    maxWidth: 200,
+    alignSelf: 'flex-start',
+  },
+  titleLogo: {
+    position: 'absolute',
+    left: 0,
+    width: 200,
+    height: 60,
   },
   titleInfoRow: {
     flexDirection: 'row',
@@ -1964,10 +2055,10 @@ const styles = StyleSheet.create({
   titleInfoItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
   },
   titleInfoText: {
     fontSize: 13,
@@ -2091,10 +2182,10 @@ const styles = StyleSheet.create({
   },
   contentSection: {
     padding: 16,
-    paddingTop: 40,
+    paddingTop: 4,
     backgroundColor: '#000', // Will be overridden dynamically
     position: 'relative',
-    marginTop: -20,
+    marginTop: -40,
   },
   dateText: {
     fontSize: 14,
@@ -2439,6 +2530,41 @@ const styles = StyleSheet.create({
   trailerType: {
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.6)',
+  },
+  posterModalContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  posterModalCloseButton: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  posterModalContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: '100%',
+    height: '100%',
+  },
+  posterModalImageContainer: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  posterModalImage: {
+    width: SCREEN_WIDTH * 0.9,
+    height: SCREEN_HEIGHT * 0.8,
   },
   movieInfoPanel: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',

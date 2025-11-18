@@ -28,8 +28,8 @@ const width = 1284;
 const height = 2778;
 const centerX = width / 2;
 const centerY = height / 2;
-const radius = 300;
-const strokeWidth = 8;
+const radius = 200; // Reduced from 300 to make logo smaller
+const strokeWidth = 6; // Reduced from 8 to match smaller size
 
 // Create SVG with circle
 const svg = `
