@@ -22,6 +22,7 @@ import { TMDBService } from '../services/TMDBService';
 import { fetchLetterboxdProfile, fetchLetterboxdWatchlist } from '../services/LetterboxdService';
 import { matchWatchlistWithTMDB } from '../services/LetterboxdWatchlistService';
 import { CachedImage } from '../components/CachedImage';
+import { Image } from 'react-native';
 
 export default function ProfileScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -150,6 +151,8 @@ export default function ProfileScreen({ navigation }) {
     if (item.media_type === 'manga') {
       navigation.navigate('MangaDetails', { item });
     } else {
+      // Navigate to MovieDetails for both movies and TV shows
+      // The MovieDetailsScreen will handle the distinction
       navigation.navigate('MovieDetails', { item });
     }
   };
@@ -336,7 +339,11 @@ export default function ProfileScreen({ navigation }) {
         >
           <Ionicons name="person" size={24} color="#fff" />
         </TouchableOpacity>
-        <Text style={styles.navTitle}>Account</Text>
+        <Image
+          source={require('../assets/logo.png')}
+          style={styles.navLogo}
+          resizeMode="contain"
+        />
         <TouchableOpacity
           style={styles.navButton}
           onPress={() => navigation.navigate('Settings')}
@@ -737,6 +744,10 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
     color: '#fff',
+  },
+  navLogo: {
+    height: 40,
+    width: 130,
   },
   scrollView: {
     flex: 1,

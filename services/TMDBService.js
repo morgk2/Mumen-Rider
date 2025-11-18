@@ -219,5 +219,61 @@ export const TMDBService = {
       return [];
     }
   },
+
+  // Fetch popular movies of all time (sorted by popularity, including classics)
+  async fetchPopularMovies() {
+    try {
+      const response = await fetch(
+        `${BASE_URL}/discover/movie?api_key=${API_KEY}&sort_by=popularity.desc&vote_count.gte=1000`
+      );
+      const data = await response.json();
+      return data.results || [];
+    } catch (error) {
+      console.error('Error fetching popular movies:', error);
+      return [];
+    }
+  },
+
+  // Fetch popular TV shows of all time (sorted by popularity, including classics)
+  async fetchPopularTV() {
+    try {
+      const response = await fetch(
+        `${BASE_URL}/discover/tv?api_key=${API_KEY}&sort_by=popularity.desc&vote_count.gte=500`
+      );
+      const data = await response.json();
+      return data.results || [];
+    } catch (error) {
+      console.error('Error fetching popular TV shows:', error);
+      return [];
+    }
+  },
+
+  // Fetch all trending content (movies, TV, anime combined)
+  async fetchAllTrending() {
+    try {
+      const response = await fetch(
+        `${BASE_URL}/trending/all/day?api_key=${API_KEY}`
+      );
+      const data = await response.json();
+      return data.results || [];
+    } catch (error) {
+      console.error('Error fetching all trending:', error);
+      return [];
+    }
+  },
+
+  // Fetch content by streaming provider
+  async fetchContentByProvider(providerId, mediaType = 'movie', page = 1) {
+    try {
+      const response = await fetch(
+        `${BASE_URL}/discover/${mediaType}?api_key=${API_KEY}&with_watch_providers=${providerId}&watch_region=US&page=${page}&sort_by=popularity.desc`
+      );
+      const data = await response.json();
+      return data.results || [];
+    } catch (error) {
+      console.error(`Error fetching ${mediaType} for provider ${providerId}:`, error);
+      return [];
+    }
+  },
 };
 

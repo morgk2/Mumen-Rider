@@ -16,6 +16,7 @@ import {
   UIManager,
   TextInput,
   Alert,
+  AppState,
 } from 'react-native';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { VideoView } from 'expo-video';
@@ -911,10 +912,18 @@ export default function VideoPlayerScreen({ route, navigation }) {
     // Auto-hide controls after 3 seconds
     startControlsTimer();
 
-    // Save progress periodically (every 10 seconds)
+    // Save progress periodically (every 5 seconds for more frequent saves)
     progressSaveIntervalRef.current = setInterval(() => {
       saveWatchProgress();
-    }, 10000);
+    }, 5000);
+
+    // Listen for app state changes to save progress when app goes to background
+    const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        console.log('[VideoPlayer] App going to background, saving progress...');
+        saveWatchProgress();
+      }
+    });
 
     return () => {
       if (controlsTimeoutRef.current) {
@@ -923,6 +932,8 @@ export default function VideoPlayerScreen({ route, navigation }) {
       if (progressSaveIntervalRef.current) {
         clearInterval(progressSaveIntervalRef.current);
       }
+      // Remove app state listener
+      appStateSubscription.remove();
       // Save progress on exit
       saveWatchProgress();
     };
@@ -1457,16 +1468,23 @@ export default function VideoPlayerScreen({ route, navigation }) {
 
   // Save watch progress
   const saveWatchProgress = async () => {
-    if (!item || !item.id || !position || !duration || position === 0 || duration === 0) return;
+    if (!item || !item.id) return;
     
     try {
+      // Get current position and duration directly from player
+      const currentPosition = player?.currentTime ? player.currentTime * 1000 : position;
+      const currentDuration = player?.duration ? player.duration * 1000 : duration;
+      
+      // Don't save if no valid position/duration
+      if (!currentPosition || !currentDuration || currentPosition === 0 || currentDuration === 0) return;
+      
       const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
       if (episode && season !== null && episodeNumber !== null) {
         await WatchProgressService.saveProgress(
           item.id,
           mediaType,
-          position,
-          duration,
+          currentPosition,
+          currentDuration,
           season,
           episodeNumber
         );
@@ -1474,10 +1492,11 @@ export default function VideoPlayerScreen({ route, navigation }) {
         await WatchProgressService.saveProgress(
           item.id,
           mediaType,
-          position,
-          duration
+          currentPosition,
+          currentDuration
         );
       }
+      console.log('[VideoPlayer] Progress saved:', currentPosition / 1000, '/', currentDuration / 1000);
     } catch (error) {
       console.error('Error saving watch progress:', error);
     }

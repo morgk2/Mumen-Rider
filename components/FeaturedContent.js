@@ -14,7 +14,7 @@ const STORY_DURATION = 10000; // 10 seconds per story
 const SLIDE_DURATION = 800; // 800ms for backdrop slide animation
 const CONTENT_SLIDE_DURATION = 1200; // 1200ms for content slide animation (slower)
 
-export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, totalItems = 1, onNext, onPrevious, featuredItems = [] }) => {
+export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, totalItems = 1, onNext, onPrevious, featuredItems = [], onMoviesFilterPress, onShowsFilterPress, onPopularNowFilterPress, filterMode = 'all' }) => {
   const insets = useSafeAreaInsets();
   const [logoUrl, setLogoUrl] = useState(null);
   const [prevLogoUrl, setPrevLogoUrl] = useState(null);
@@ -106,15 +106,13 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
 
   useEffect(() => {
     if (displayItem) {
-      // Reset logo state when item changes
-      setLogoUrl(null);
-      setLoading(true);
+      // Fetch logo and details for the display item
       fetchLogo();
       fetchItemDetails();
       // Preload next item's backdrop
       preloadNextItem();
     }
-  }, [displayItem?.id, currentIndex, featuredItems, totalItems]);
+  }, [displayItem?.id]);
 
   // Setup accelerometer for parallax effect
   useEffect(() => {
@@ -224,85 +222,95 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
     }
     
     if (currentIndex !== prevIndex && item) {
-      // Store previous item (use displayItem which is the currently shown item)
-      if (displayItem) {
-        setPrevItem(displayItem);
-        setPrevLogoUrl(logoUrl);
-        setPrevLoading(false);
-      }
-      
-      // Reset logo state before updating to new item
-      setLogoUrl(null);
-      setLoading(true);
-      
-      // Update display item immediately to the new item
-      setDisplayItem(item);
-      setDisplayItemDetails(null); // Reset details
-      setNextItemReady(false);
-      
-      // Start previous item with full opacity
-      prevBackdropOpacity.setValue(1);
-      prevContentOpacity.setValue(1);
-      // Start new item with 0 opacity (will fade in)
-      backdropOpacity.setValue(0);
-      contentOpacity.setValue(0);
-      
-      // Small delay to ensure new backdrop is ready
-      requestAnimationFrame(() => {
-        // Animate previous backdrop fading out
-        const prevBackdropFade = Animated.timing(prevBackdropOpacity, {
-          toValue: 0,
-          duration: SLIDE_DURATION,
-          easing: Easing.out(Easing.ease),
-          useNativeDriver: true,
-        });
+      const performTransition = async () => {
+        // Store previous item (use displayItem which is the currently shown item)
+        if (displayItem) {
+          setPrevItem(displayItem);
+          setPrevLogoUrl(logoUrl);
+          setPrevLoading(false);
+        }
         
-        // Animate previous content fading out
-        const prevContentFade = Animated.timing(prevContentOpacity, {
-          toValue: 0,
-          duration: SLIDE_DURATION,
-          easing: Easing.out(Easing.ease),
-          useNativeDriver: true,
-        });
+        // Fetch the new logo BEFORE updating displayItem or starting animations
+        setLoading(true);
+        const newLogoUrl = await fetchLogoForItem(item);
         
-        // Animate new backdrop fading in
-        const newBackdropFade = Animated.timing(backdropOpacity, {
-          toValue: 1,
-          duration: SLIDE_DURATION,
-          easing: Easing.in(Easing.ease),
-          useNativeDriver: true,
-        });
+        // Check if we're still on the same index (user might have navigated away quickly)
+        if (currentIndex === prevIndex) return;
         
-        // Animate new content fading in
-        const newContentFade = Animated.timing(contentOpacity, {
-          toValue: 1,
-          duration: SLIDE_DURATION,
-          easing: Easing.in(Easing.ease),
-          useNativeDriver: true,
-        });
+        // Now set the new logo
+        setLogoUrl(newLogoUrl);
+        setLoading(false);
         
-        // Run all animations in parallel
-        Animated.parallel([
-          prevBackdropFade,
-          prevContentFade,
-          newBackdropFade,
-          newContentFade,
-        ]).start(() => {
-          // After animation completes, clear previous item and reset opacity
-          setPrevItem(null);
-          setPrevLogoUrl(null);
-          prevBackdropOpacity.setValue(1);
-          backdropOpacity.setValue(1);
-          prevContentOpacity.setValue(1);
-          contentOpacity.setValue(1);
-          // Preload next item for smooth next transition
-          preloadNextItem();
+        // Update display item to the new item
+        setDisplayItem(item);
+        setDisplayItemDetails(null); // Reset details
+        setNextItemReady(false);
+        
+        // Start previous item with full opacity
+        prevBackdropOpacity.setValue(1);
+        prevContentOpacity.setValue(1);
+        // Start new item with 0 opacity (will fade in)
+        backdropOpacity.setValue(0);
+        contentOpacity.setValue(0);
+        
+        // Small delay to ensure new backdrop is ready
+        requestAnimationFrame(() => {
+          // Animate previous backdrop fading out
+          const prevBackdropFade = Animated.timing(prevBackdropOpacity, {
+            toValue: 0,
+            duration: SLIDE_DURATION,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          });
+          
+          // Animate previous content fading out
+          const prevContentFade = Animated.timing(prevContentOpacity, {
+            toValue: 0,
+            duration: SLIDE_DURATION,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          });
+          
+          // Animate new backdrop fading in
+          const newBackdropFade = Animated.timing(backdropOpacity, {
+            toValue: 1,
+            duration: SLIDE_DURATION,
+            easing: Easing.in(Easing.ease),
+            useNativeDriver: true,
+          });
+          
+          // Animate new content fading in
+          const newContentFade = Animated.timing(contentOpacity, {
+            toValue: 1,
+            duration: SLIDE_DURATION,
+            easing: Easing.in(Easing.ease),
+            useNativeDriver: true,
+          });
+          
+          // Run all animations in parallel
+          Animated.parallel([
+            prevBackdropFade,
+            prevContentFade,
+            newBackdropFade,
+            newContentFade,
+          ]).start(() => {
+            // After animation completes, clear previous item and reset opacity
+            setPrevItem(null);
+            setPrevLogoUrl(null);
+            prevBackdropOpacity.setValue(1);
+            backdropOpacity.setValue(1);
+            prevContentOpacity.setValue(1);
+            contentOpacity.setValue(1);
+            // Preload next item for smooth next transition
+            preloadNextItem();
+          });
         });
-      });
+      };
       
+      performTransition();
       setPrevIndex(currentIndex);
     }
-  }, [currentIndex, prevIndex, totalItems, featuredItems, item, displayItem, logoUrl]);
+  }, [currentIndex, prevIndex, totalItems, featuredItems, item, displayItem]);
 
   // Handle story progress and auto-advance
   useEffect(() => {
@@ -336,15 +344,13 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
     };
   }, [currentIndex, totalItems, progressAnim, onNext]);
 
-  const fetchLogo = async () => {
-    if (!displayItem) return;
-    
-    // Store the current item ID to ensure we're setting the logo for the correct item
-    const currentItemId = displayItem.id;
+  // Helper function to fetch logo for a specific item and return the URL
+  const fetchLogoForItem = async (itemToFetch) => {
+    if (!itemToFetch) return null;
     
     try {
-      const mediaType = displayItem.media_type || (displayItem.title ? 'movie' : 'tv');
-      const itemId = displayItem.id;
+      const mediaType = itemToFetch.media_type || (itemToFetch.title ? 'movie' : 'tv');
+      const itemId = itemToFetch.id;
       
       const response = await fetch(
         `https://api.themoviedb.org/3/${mediaType}/${itemId}/images?api_key=738b4edd0a156cc126dc4a4b8aea4aca`
@@ -354,22 +360,29 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
       // Find English logo, or use the first one
       const logo = data.logos?.find(logo => logo.iso_639_1 === 'en') || data.logos?.[0];
       
-      // Only set logo if we're still on the same item (prevent race conditions)
-      if (displayItem && displayItem.id === currentItemId) {
       if (logo) {
         const logoPath = logo.file_path;
-        setLogoUrl(`https://image.tmdb.org/t/p/w500${logoPath}`);
-        } else {
-          setLogoUrl(null);
-        }
-        setLoading(false);
+        return `https://image.tmdb.org/t/p/w500${logoPath}`;
       }
+      return null;
     } catch (error) {
       console.error('Error fetching logo:', error);
-      // Only update loading state if we're still on the same item
-      if (displayItem && displayItem.id === currentItemId) {
+      return null;
+    }
+  };
+
+  const fetchLogo = async () => {
+    if (!displayItem) return;
+    
+    // Store the current item ID to ensure we're setting the logo for the correct item
+    const currentItemId = displayItem.id;
+    
+    const logoUrl = await fetchLogoForItem(displayItem);
+    
+    // Only set logo if we're still on the same item (prevent race conditions)
+    if (displayItem && displayItem.id === currentItemId) {
+      setLogoUrl(logoUrl);
       setLoading(false);
-      }
     }
   };
 
@@ -441,6 +454,13 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
         </View>
       )}
 
+      {/* Top Gradient Shadow for Logo Visibility */}
+      <LinearGradient
+        colors={['rgba(0, 0, 0, 0.7)', 'rgba(0, 0, 0, 0.4)', 'transparent']}
+        style={[styles.topGradient, { top: -100 }]}
+        pointerEvents="none"
+      />
+
       {/* Logo and Filter Buttons */}
       <View style={[styles.logoButtonsContainer, { top: insets.top + 60 + 1 }]}>
         <Image 
@@ -449,19 +469,61 @@ export const FeaturedContent = ({ item, navigation, scrollY, currentIndex = 0, t
           resizeMode="contain"
         />
         <View style={styles.buttonsRow}>
-          <TouchableOpacity style={styles.pillButton} activeOpacity={0.7}>
-            <BlurView intensity={80} tint="dark" style={styles.pillButtonBlur}>
-              <Text style={styles.pillButtonText}>Movies</Text>
+          <TouchableOpacity 
+            style={styles.pillButton} 
+            activeOpacity={0.7}
+            onPress={onMoviesFilterPress}
+          >
+            <BlurView 
+              intensity={80} 
+              tint="dark" 
+              style={[
+                styles.pillButtonBlur,
+                filterMode === 'movies' && styles.pillButtonActive
+              ]}
+            >
+              <Text style={[
+                styles.pillButtonText,
+                filterMode === 'movies' && styles.pillButtonTextActive
+              ]}>Movies</Text>
             </BlurView>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.pillButton} activeOpacity={0.7}>
-            <BlurView intensity={80} tint="dark" style={styles.pillButtonBlur}>
-              <Text style={styles.pillButtonText}>Shows</Text>
+          <TouchableOpacity 
+            style={styles.pillButton} 
+            activeOpacity={0.7}
+            onPress={onShowsFilterPress}
+          >
+            <BlurView 
+              intensity={80} 
+              tint="dark" 
+              style={[
+                styles.pillButtonBlur,
+                filterMode === 'shows' && styles.pillButtonActive
+              ]}
+            >
+              <Text style={[
+                styles.pillButtonText,
+                filterMode === 'shows' && styles.pillButtonTextActive
+              ]}>Shows</Text>
             </BlurView>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.pillButton} activeOpacity={0.7}>
-            <BlurView intensity={80} tint="dark" style={styles.pillButtonBlur}>
-              <Text style={styles.pillButtonText}>Popular Now</Text>
+          <TouchableOpacity 
+            style={styles.pillButton} 
+            activeOpacity={0.7}
+            onPress={onPopularNowFilterPress}
+          >
+            <BlurView 
+              intensity={80} 
+              tint="dark" 
+              style={[
+                styles.pillButtonBlur,
+                filterMode === 'popular' && styles.pillButtonActive
+              ]}
+            >
+              <Text style={[
+                styles.pillButtonText,
+                filterMode === 'popular' && styles.pillButtonTextActive
+              ]}>Popular Now</Text>
             </BlurView>
           </TouchableOpacity>
         </View>
@@ -789,18 +851,26 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
+  topGradient: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 350,
+    zIndex: 10,
+  },
   logoButtonsContainer: {
     position: 'absolute',
-    right: 20,
+    right: 50,
     flexDirection: 'row',
     alignItems: 'center',
     zIndex: 15,
     paddingVertical: 8,
   },
   headerLogo: {
-    width: 120,
-    height: 40,
-    marginRight: 12,
+    width: 200,
+    height: 67,
+    marginRight: -60,
   },
   buttonsRow: {
     flexDirection: 'row',
@@ -821,6 +891,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+  },
+  pillButtonActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+  },
+  pillButtonTextActive: {
+    color: '#000',
   },
 });
 

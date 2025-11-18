@@ -31,7 +31,25 @@ export class StorageService {
                       (typeof item.title === 'object' || (!item.poster_path && !item.backdrop_path));
       
       // Determine media type - explicitly set to 'manga' if detected
-      const mediaType = isManga ? 'manga' : (item.media_type || (item.title && typeof item.title === 'string' ? 'movie' : item.name ? 'tv' : 'manga'));
+      // Logic matches the pattern used throughout the app:
+      // 1. Trust media_type if present
+      // 2. If title exists -> movie
+      // 3. If name exists (without title) -> TV show
+      let mediaType;
+      if (isManga) {
+        mediaType = 'manga';
+      } else if (item.media_type) {
+        mediaType = item.media_type;
+      } else if (item.title && typeof item.title === 'string') {
+        // Movie - has title property (string)
+        mediaType = 'movie';
+      } else if (item.name) {
+        // TV show - has name but no title
+        mediaType = 'tv';
+      } else {
+        // Final fallback
+        mediaType = 'movie';
+      }
       
       console.log('Saving bookmark - isManga:', isManga, 'mediaType:', mediaType, 'item.id:', item.id);
       
@@ -148,7 +166,23 @@ export class StorageService {
 
       const collection = collections[collectionIndex];
       // Determine media type - manga items don't have media_type, they have id from AniList
-      const mediaType = item.media_type || (item.title ? 'movie' : item.name ? 'tv' : 'manga');
+      // Logic matches the pattern used throughout the app:
+      // 1. Trust media_type if present
+      // 2. If title exists -> movie
+      // 3. If name exists (without title) -> TV show
+      let mediaType;
+      if (item.media_type) {
+        mediaType = item.media_type;
+      } else if (item.title) {
+        // Movie - has title property
+        mediaType = 'movie';
+      } else if (item.name) {
+        // TV show - has name but no title
+        mediaType = 'tv';
+      } else {
+        // Final fallback - likely manga
+        mediaType = 'manga';
+      }
       
       // Check if item already exists
       const exists = collection.items.find(

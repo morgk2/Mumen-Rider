@@ -25,6 +25,7 @@ import PlayerSettingsScreen from './screens/PlayerSettingsScreen';
 import VideoSourceSettingsScreen from './screens/VideoSourceSettingsScreen';
 import DownloadsScreen from './screens/DownloadsScreen';
 import DownloadedMangaDetailsScreen from './screens/DownloadedMangaDetailsScreen';
+import StreamingPlatformScreen from './screens/StreamingPlatformScreen';
 import { VideoPlayerProvider } from './contexts/VideoPlayerContext';
 
 const Tab = createBottomTabNavigator();
@@ -60,6 +61,7 @@ function HomeStack() {
           animation: 'fade',
         }}
       />
+      <Stack.Screen name="StreamingPlatform" component={StreamingPlatformScreen} />
     </Stack.Navigator>
   );
 }

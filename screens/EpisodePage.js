@@ -8,6 +8,7 @@ import {
   Dimensions,
   ActivityIndicator,
   Animated,
+  AppState,
 } from 'react-native';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { VideoView } from 'expo-video';
@@ -25,6 +26,7 @@ import { StorageService } from '../services/StorageService';
 import { CachedImage } from '../components/CachedImage';
 import { EpisodeItem } from '../components/EpisodeItem';
 import { useVideoPlayerContext } from '../contexts/VideoPlayerContext';
+import Svg, { Path } from 'react-native-svg';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const VIDEO_HEIGHT = SCREEN_WIDTH * 0.5625; // 16:9 aspect ratio
@@ -74,10 +76,12 @@ export default function EpisodePage({ route, navigation }) {
   const [allEpisodes, setAllEpisodes] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
+  const [cinemaNoticeDismissed, setCinemaNoticeDismissed] = useState(false);
   const [watchProgress, setWatchProgress] = useState(null);
   
   const scrollY = useRef(new Animated.Value(0)).current;
   const isFocused = useIsFocused(); // Track if this screen is focused
+  
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', () => {
       resetPlayerState();
@@ -448,6 +452,39 @@ export default function EpisodePage({ route, navigation }) {
     const MIN_POSITION_CHANGE_MS = 10000; // Also save if position changed by at least 10 seconds
     let lastSaveTime = Date.now();
     
+    // Function to save progress
+    const saveProgressNow = () => {
+      if (position > 0 && duration > 0) {
+        const currentPos = player?.currentTime ? player.currentTime * 1000 : position;
+        const currentDur = player?.duration ? player.duration * 1000 : duration;
+        
+        const progress = {
+          position: currentPos,
+          duration: currentDur,
+          progress: currentPos / currentDur,
+        };
+        
+        if (isMovie) {
+          WatchProgressService.saveProgress(
+            item.id,
+            'movie',
+            currentPos,
+            currentDur
+          );
+        } else if (episode) {
+          WatchProgressService.saveProgress(
+            item.id,
+            'tv',
+            currentPos,
+            currentDur,
+            season,
+            episodeNumber
+          );
+        }
+        console.log('[EpisodePage] Progress saved:', currentPos / 1000, '/', currentDur / 1000);
+      }
+    };
+    
     const interval = setInterval(() => {
       if (position > 0 && duration > 0) {
         const currentTime = Date.now();
@@ -456,37 +493,27 @@ export default function EpisodePage({ route, navigation }) {
         
         // Save every 5 seconds or if position changed significantly (e.g., user seeked)
         if (timeSinceLastSave >= SAVE_INTERVAL_MS || positionChange >= MIN_POSITION_CHANGE_MS) {
-          const progress = {
-            position: position,
-            duration: duration,
-            progress: position / duration,
-          };
-          
-          if (isMovie) {
-            WatchProgressService.saveProgress(
-              item.id,
-              'movie',
-              null,
-              null,
-              progress
-            );
-          } else if (episode) {
-            WatchProgressService.saveProgress(
-              item.id,
-              'tv',
-              season,
-              episodeNumber,
-              progress
-            );
-          }
-          
+          saveProgressNow();
           lastSavedPosition = position;
           lastSaveTime = currentTime;
         }
       }
     }, 1000); // Check every second for more responsive saving
     
-    return () => clearInterval(interval);
+    // Listen for app state changes to save progress when app goes to background
+    const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        console.log('[EpisodePage] App going to background, saving progress...');
+        saveProgressNow();
+      }
+    });
+    
+    return () => {
+      clearInterval(interval);
+      appStateSubscription.remove();
+      // Save progress one final time when component unmounts
+      saveProgressNow();
+    };
   }, [player, item, episode, season, episodeNumber, isMovie, position, duration, streamUrl]);
 
   // Fetch TV show details and episodes (only for TV shows)
@@ -754,16 +781,22 @@ export default function EpisodePage({ route, navigation }) {
   useFocusEffect(
     React.useCallback(() => {
       isScreenActiveRef.current = true;
-      setLoading(true);
+      // Don't set loading to true if we already have a streamUrl
+      // This prevents reloading when coming back from VideoPlayerScreen
+      if (!streamUrl) {
+        setLoading(true);
+      }
       setError(null);
       return () => {
         isScreenActiveRef.current = false;
         // Don't reset player state when navigating to VideoPlayerScreen
         // Only reset when actually leaving the screen (handled by beforeRemove listener)
         setError(null);
-        setLoading(false);
+        if (!streamUrl) {
+          setLoading(false);
+        }
       };
-    }, [])
+    }, [streamUrl])
   );
 
   const handleNextEpisode = async () => {
@@ -815,6 +848,20 @@ export default function EpisodePage({ route, navigation }) {
   };
 
   const progressPercentage = duration > 0 && position > 0 ? (position / duration) * 100 : 0;
+
+  // Check if movie is recently released (1-5 months old)
+  const isRecentMovie = () => {
+    if (!isMovie) return false;
+    
+    const releaseDate = movieDetails?.release_date || item.release_date;
+    if (!releaseDate) return false;
+    
+    const release = new Date(releaseDate);
+    const now = new Date();
+    const monthsDiff = (now.getFullYear() - release.getFullYear()) * 12 + (now.getMonth() - release.getMonth());
+    
+    return monthsDiff >= 1 && monthsDiff <= 5;
+  };
 
   if (!item) {
     return (
@@ -998,6 +1045,37 @@ export default function EpisodePage({ route, navigation }) {
                     {movieDetails?.overview || item.overview}
                   </Text>
                 ) : null}
+                
+                {/* Cinema Notice for Recent Movies */}
+                {isRecentMovie() && !cinemaNoticeDismissed && (
+                  <View style={styles.cinemaNotice}>
+                    <View style={styles.cinemaNoticeIcon}>
+                      <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <Path 
+                          d="M19.82 2H4.18C2.97 2 2 2.97 2 4.18v15.64C2 21.03 2.97 22 4.18 22h15.64c1.21 0 2.18-.97 2.18-2.18V4.18C22 2.97 21.03 2 19.82 2zM7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 7h5M17 17h5" 
+                          stroke="#FFA500" 
+                          strokeWidth="2" 
+                          strokeLinecap="round" 
+                          strokeLinejoin="round"
+                        />
+                      </Svg>
+                    </View>
+                    <View style={styles.cinemaNoticeText}>
+                      <Text style={styles.cinemaNoticeTitle}>Recently Released</Text>
+                      <Text style={styles.cinemaNoticeDescription}>
+                        This film may still be showing in theaters. High-quality digital sources might not be widely available yet.
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.cinemaNoticeClose}
+                      onPress={() => setCinemaNoticeDismissed(true)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="close" size={18} color="rgba(255, 255, 255, 0.6)" />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                
                 {(movieDetails?.release_date || item.release_date) ? (
                   <Text style={styles.airDate}>
                     Released {new Date(movieDetails?.release_date || item.release_date).toLocaleDateString('en-US', { 
@@ -1476,6 +1554,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginLeft: 12,
     marginTop: 8,
+  },
+  cinemaNotice: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 165, 0, 0.1)',
+    borderLeftWidth: 3,
+    borderLeftColor: '#FFA500',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  cinemaNoticeIcon: {
+    marginRight: 12,
+    marginTop: 2,
+  },
+  cinemaNoticeText: {
+    flex: 1,
+  },
+  cinemaNoticeTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFA500',
+    marginBottom: 4,
+  },
+  cinemaNoticeDescription: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.8)',
+    lineHeight: 18,
+  },
+  cinemaNoticeClose: {
+    padding: 4,
+    marginLeft: 8,
   },
 });
 

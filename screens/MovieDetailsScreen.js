@@ -1381,51 +1381,84 @@ export default function MovieDetailsScreen({ route, navigation }) {
             style={styles.gradient}
           />
 
-          {/* Title Section */}
+          {/* Title Section with Poster */}
           <View style={styles.titleContainer}>
-            {logoUrl ? (
-              <CachedImage
-                source={{ uri: logoUrl }}
-                style={styles.titleLogo}
-                resizeMode="contain"
-              />
-            ) : (
-              !loadingLogo && (
-                <Text style={styles.title}>{displayTitle}</Text>
-              )
-            )}
+            <View style={styles.titleWithPosterRow}>
+              {/* Poster on the left */}
+              {posterUrl && (
+                <CachedImage
+                  source={{ uri: posterUrl }}
+                  style={styles.titlePoster}
+                  resizeMode="cover"
+                />
+              )}
+              {/* Logo/Title and Info on the right */}
+              <View style={styles.titleLogoContainer}>
+                {/* Logo/Title */}
+                {logoUrl ? (
+                  <CachedImage
+                    source={{ uri: logoUrl }}
+                    style={styles.titleLogo}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  !loadingLogo && (
+                    <Text style={styles.title}>{displayTitle}</Text>
+                  )
+                )}
+                {/* Rating and Date under the title */}
+                <View style={styles.titleInfoRow}>
+                  {/* Rating */}
+                  {rating > 0 && (
+                    <View style={styles.titleInfoItem}>
+                      <Ionicons name="star" size={14} color="#ffd700" style={{ marginRight: 4 }} />
+                      <Text style={styles.titleInfoText}>{rating.toFixed(1)}</Text>
+                    </View>
+                  )}
+                  
+                  {/* Date */}
+                  {releaseDate && (
+                    <View style={styles.titleInfoItem}>
+                      <Ionicons name="calendar" size={14} color="#fff" style={{ marginRight: 4 }} />
+                      <Text style={styles.titleInfoText}>{new Date(releaseDate).getFullYear()}</Text>
+                    </View>
+                  )}
+                  
+                  {/* Runtime or Number of Seasons */}
+                  {isTVShow && tvDetails?.number_of_seasons && (
+                    <View style={styles.titleInfoItem}>
+                      <Ionicons name="tv" size={14} color="#fff" style={{ marginRight: 4 }} />
+                      <Text style={styles.titleInfoText}>
+                        {tvDetails.number_of_seasons} {tvDetails.number_of_seasons === 1 ? 'Season' : 'Seasons'}
+                      </Text>
+                    </View>
+                  )}
+                  {isMovie && item.runtime && (
+                    <View style={styles.titleInfoItem}>
+                      <Ionicons name="time" size={14} color="#fff" style={{ marginRight: 4 }} />
+                      <Text style={styles.titleInfoText}>
+                        {Math.floor(item.runtime / 60)}h {item.runtime % 60}m
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                
+                {/* Genres under rating/date */}
+                {genres.length > 0 && (
+                  <View style={styles.titleGenresRow}>
+                    {genres.slice(0, 3).map((genre, index) => (
+                      <View key={index} style={styles.titleGenreTag}>
+                        <Text style={styles.titleGenreText}>{genre}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            </View>
           </View>
 
           {/* Date and Info Section */}
           <View style={styles.infoSection}>
-            <View style={styles.infoRow}>
-              {/* Rating */}
-              {rating > 0 && (
-                <View style={styles.infoItem}>
-                  <Ionicons name="star" size={16} color="#ffd700" style={{ marginRight: 4 }} />
-                  <Text style={styles.infoText}>{rating.toFixed(1)}</Text>
-                </View>
-              )}
-              
-              {/* Date */}
-              {formattedDate && (
-                <View style={styles.infoItem}>
-                  <Ionicons name="calendar" size={16} color="#fff" style={{ marginRight: 4 }} />
-                  <Text style={styles.infoText}>{formattedDate}</Text>
-                </View>
-              )}
-            </View>
-            
-            {/* Genres */}
-            {genres.length > 0 && (
-              <View style={styles.genresContainer}>
-                {genres.map((genre, index) => (
-                  <View key={index} style={styles.genreChip}>
-                    <Text style={styles.genreText}>{genre}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
           </View>
         </View>
 
@@ -1883,25 +1916,85 @@ const styles = StyleSheet.create({
     bottom: 80,
     left: 20,
     right: 20,
-    alignItems: 'center',
+    alignItems: 'flex-start',
     zIndex: 2,
     // Ensure title container doesn't stretch - it's static
     flexShrink: 0,
   },
+  titleWithPosterRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 16,
+  },
+  titlePoster: {
+    width: 140,
+    height: 210,
+    borderRadius: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  titleLogoContainer: {
+    flex: 1,
+    justifyContent: 'flex-start',
+    gap: 8,
+  },
   title: {
-    fontSize: 48,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#fff',
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 10,
-    textAlign: 'center',
   },
   titleLogo: {
-    width: '70%',
-    height: 120,
-    maxWidth: 400,
-    alignSelf: 'center',
+    width: '100%',
+    height: 60,
+    maxWidth: 200,
+  },
+  titleInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
+  },
+  titleInfoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  titleInfoText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  titleGenresRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 6,
+  },
+  titleGenreTag: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  titleGenreText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#fff',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   infoSection: {
     position: 'absolute',
